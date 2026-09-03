@@ -1,0 +1,413 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LoRa GPS RX and Logger — sitgs</title>
+<link rel="stylesheet" href="/static/leaflet.css">
+<style>
+:root{--bg:#f2f4f6;--panel:#fff;--ink:#16202a;--muted:#5b6b7a;--line:#cfd6dd;--accent:#0e7c86;--ok:#2b9a48;--warn:#c98a12;--bad:#c0392b;--chip:#e8ecef}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.35 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;height:100vh;display:grid;grid-template-rows:auto 1fr}
+header{background:#1d2731;color:#fff;padding:6px 12px;display:flex;align-items:center;gap:16px;font-size:12px;font-family:Menlo,Consolas,monospace}
+header b{color:#7fd6dd;font-size:13px}
+main{display:grid;grid-template-columns:380px 1fr;gap:8px;padding:8px;min-height:0}
+.col{display:flex;flex-direction:column;gap:8px;min-height:0}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px}
+.box h4{margin:0 0 6px;font:600 11px Menlo,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+label{display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;color:var(--ink)}
+input[type=text],input[type=number],select{border:1px solid var(--line);border-radius:3px;padding:3px 5px;font:inherit;background:#fff;color:var(--ink)}
+input[type=number]{width:80px}
+button{border:1px solid var(--line);background:#fff;border-radius:3px;padding:4px 10px;font:inherit;cursor:pointer;color:var(--ink)}
+button.toggle.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.led{display:inline-block;width:14px;height:14px;border-radius:50%;background:#b5bec6;border:1px solid #8a949c;vertical-align:middle}
+.led.on{background:#39d353;border-color:#1f8f36}
+.led.warn{background:#f2b632}
+.led.off{background:#b5bec6}
+textarea.raw{width:100%;height:220px;font:11px Menlo,Consolas,monospace;border:1px solid var(--line);background:#fafbfc;resize:vertical;white-space:pre;overflow:auto;color:var(--ink)}
+canvas{width:100%;display:block;background:#fafbfc;border:1px solid var(--line);border-radius:3px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.tabs button{border:1px solid var(--line);border-bottom:none;border-radius:4px 4px 0 0;background:var(--chip)}
+.tabs button.active{background:#fff;font-weight:600}
+.tab{min-height:0;overflow:auto}
+.tab:not(.active){display:none !important}
+.tab.active{display:grid}
+table.grid{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums}
+table.grid th,table.grid td{border-bottom:1px solid var(--line);padding:3px 6px;text-align:left;white-space:nowrap}
+table.grid th{font:600 10px Menlo,Consolas,monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--chip)}
+tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
+.bar{display:inline-block;height:10px;width:70px;background:#e3e8ec;border:1px solid var(--line);vertical-align:middle;position:relative}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#c0392b,#f2b632 50%,#39d353)}
+.side{display:grid;gap:8px;align-content:start}
+.field{display:grid;grid-template-columns:150px 1fr;gap:4px 8px;align-items:center}
+.status{font:11px Menlo,Consolas,monospace;background:#fafbfc;border:1px solid var(--line);height:120px;overflow:auto;padding:6px;white-space:pre}
+.small{color:var(--muted);font-size:11px}
+#map{height:100%;min-height:380px;border:1px solid var(--line);border-radius:3px}
+.two{display:grid;grid-template-columns:1fr 330px;gap:10px;min-height:0}
+.dest td input[type=text]{width:120px}.dest td input[type=number]{width:64px}
+.mono{font-family:Menlo,Consolas,monospace}
+</style></head><body>
+<header><b>LoRa GPS RX and Logger</b><span id="hcfg" class="small"></span><span>DJI boxes <span id="nboxes">0</span> · drone CoT <span id="dcot">0</span></span><span style="margin-left:auto">uptime <span id="up">0</span>s</span></header>
+<main>
+<!-- ============ LEFT COLUMN ============ -->
+<div class="col">
+  <div class="box">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <select id="ctype" style="width:110px"><option value="serial">Serial</option><option value="network">Network (TCP)</option></select>
+      <button id="btnConnect" class="toggle" style="min-width:100px">Connect</button>
+      <span class="led" id="ledConn"></span>
+      <span id="connStatus" class="small mono"></span>
+    </div>
+    <div id="serialRow" style="display:flex;gap:6px;align-items:end;flex-wrap:wrap">
+      <label style="flex-direction:column;align-items:start">Serial port<select id="cport" style="width:190px"></select></label>
+      <label style="flex-direction:column;align-items:start">baud rate<input type="number" id="cbaud" value="115200"></label>
+      <button id="btnRefresh">Refresh</button>
+    </div>
+    <div id="netRow" style="display:none;gap:6px;align-items:end">
+      <label style="flex-direction:column;align-items:start">Host / device-server IP<input type="text" id="chost" style="width:160px"></label>
+      <label style="flex-direction:column;align-items:start">TCP port<input type="number" id="ctcp"></label>
+    </div>
+    <details style="margin-top:8px"><summary style="cursor:pointer;font:600 11px Menlo,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Cosmostreamer boxes</summary>
+      <div style="margin-top:6px"><label><input type="checkbox" id="co_enabled"> Enable</label><label><input type="checkbox" id="co_discovery"> LAN discovery (UDP 5252 broadcast)</label></div>
+      <label style="flex-direction:column;align-items:start;width:100%">Manual hosts (ip or ip:port, comma separated)<input type="text" id="co_hosts" style="width:100%"></label>
+      <div style="margin-top:4px"><label><input type="checkbox" id="co_mqtt_enabled"> MQTT (for boxes behind a broker/VPN)</label></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><input type="text" id="co_mqtt_host" placeholder="broker host" style="width:130px"><input type="number" id="co_mqtt_port" placeholder="1883" style="width:70px"><input type="text" id="co_mqtt_username" placeholder="user" style="width:80px"><input type="text" id="co_mqtt_password" placeholder="password" style="width:90px"></div>
+      <div class="small mono" id="co_status" style="margin-top:4px"></div>
+    </details>
+    <div class="small mono" style="margin-top:6px">lines <span id="lines">0</span> · reports <span id="reports">0</span> · bad <span id="bad">0</span> · rejected <span id="ghosts">0</span> · bytes <span id="bytes">0</span></div>
+  </div>
+  <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <h4>Incoming data</h4>
+    <textarea class="raw" id="raw" readonly></textarea>
+    <h4 style="margin-top:8px">Message timeline <span class="small" style="text-transform:none;letter-spacing:0">(last 120 s, one row per tracker)</span></h4>
+    <canvas id="cvTimeline" height="90"></canvas>
+    <h4 style="margin-top:8px">Transmission time slots <span class="small" style="text-transform:none;letter-spacing:0">(TDMA slot of arrival, 0–19)</span></h4>
+    <canvas id="cvSlots" height="150"></canvas>
+  </div>
+</div>
+
+<!-- ============ RIGHT COLUMN ============ -->
+<div class="col">
+  <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <div class="tabs">
+      <button data-tab="baro" class="active">Barometric alt</button><button data-tab="cot">CoT</button><button data-tab="log">Log</button>
+      <button data-tab="drones">Drones</button><button data-tab="mission">Mission</button><button data-tab="video">Video</button><button data-tab="kml">KML out</button><button data-tab="overview">Overview</button><button data-tab="debug">Debug</button>
+    </div>
+
+    <!-- Barometric alt -->
+    <div class="tab active two" id="tab-baro">
+      <div style="overflow:auto"><table class="grid" id="grid"><thead><tr><th>ID</th><th>RSSI</th><th></th><th>Pressure</th><th>T</th><th>GPS Alt</th><th>Baro Alt</th><th>Age</th><th>Battery</th><th>Fix</th><th>Sats</th></tr></thead><tbody></tbody></table></div>
+      <div class="side">
+        <div class="box"><h4>Weather conditions</h4>
+          <div class="field"><span>Pressure (bars)</span><input type="number" step="0.00001" id="b_ref_pressure_bar">
+          <span>Temp. deg C</span><input type="number" step="0.1" id="b_ref_temp_c">
+          <span>Altitude [m MSL]</span><input type="number" step="0.1" id="b_ref_altitude_m"></div></div>
+        <div class="box"><h4>Auto update reference</h4>
+          <label><input type="radio" name="bauto" value="disable"> Disable</label>
+          <label><input type="radio" name="bauto" value="tracker"> Tracker #</label><input type="number" id="b_ref_tracker_id" style="width:70px">
+          <div class="field" style="margin-top:6px"><span>Pressure at sea level (calculated)</span><b id="sealevel" class="mono">—</b></div></div>
+        <div class="box"><h4>Barometric altitude disposition</h4><div class="small">(affects CSV logging and CoT output)</div>
+          <label><input type="radio" name="bmode" value="disable"> Disable [report GPS altitude]</label><br>
+          <label><input type="radio" name="bmode" value="as-is"> As-is [standard pressure]</label><br>
+          <label><input type="radio" name="bmode" value="recompute"> Recompute [specified pressure]</label></div>
+        <div class="box"><div class="field"><span>Data age tolerance [s]</span><input type="number" id="data_age_tolerance_s"></div><div class="small">(affects display and KML/GeoJSON writing)</div></div>
+      </div>
+    </div>
+
+    <!-- CoT -->
+    <div class="tab" id="tab-cot" style="grid-template-columns:1fr;align-content:start;gap:8px">
+      <div style="display:flex;gap:18px;align-items:end;flex-wrap:wrap">
+        <label style="flex-direction:column;align-items:start">Local geoid height<input type="number" step="0.1" id="c_geoid_height_m"></label>
+        <label style="flex-direction:column;align-items:start">Geoid height from GPS<input type="text" id="geoid_gps" readonly style="width:70px;background:#eee"></label>
+        <label><input type="checkbox" id="c_geoid_auto_update"> Auto update geoid</label>
+        <button id="btnEmit" class="toggle" style="min-width:110px">Emit CoT</button>
+        <span class="small mono">sent <span id="cotsent">0</span> · errors <span id="coterr">0</span></span>
+      </div>
+      <div style="display:flex;gap:18px;align-items:end;flex-wrap:wrap">
+        <label style="flex-direction:column;align-items:start">Type<select id="c_type_sel" style="width:220px"></select></label>
+        <label style="flex-direction:column;align-items:start">type string<input type="text" id="c_type" style="width:130px"></label>
+        <label style="flex-direction:column;align-items:start">CoT period [ms]<input type="number" id="c_period_ms"></label>
+        <label style="flex-direction:column;align-items:start">stale [s]<input type="number" id="c_stale_s"></label>
+      </div>
+      <div class="box" style="width:300px"><div class="field"><span>CoT Prefix</span><input type="text" id="c_uid_prefix" style="width:100px">
+        <span>format string</span><input type="text" id="c_uid_format" style="width:100px"></div>
+        <label><input type="checkbox" id="c_include_flow_tag"> IncludeFlowTag</label></div>
+      <table class="grid dest" id="dest"><thead><tr><th>On</th><th>Destination IP</th><th>Port</th><th>Interface</th><th>TTL</th><th></th></tr></thead><tbody></tbody></table>
+      <div><button id="btnAddDest">Add destination</button> <span class="small">224.0.0.0–239.255.255.255 is sent as multicast; TAK SA default is 239.2.3.1:6969</span></div>
+      <div class="box"><h4>Drones (Cosmostreamer)</h4>
+        <label><input type="checkbox" id="co_video_in_cot"> Include the box's RTSP video link in CoT (icon opens video in ATAK/WinTAK)</label><br>
+        <label><input type="checkbox" id="co_cot_unpaired"> Also send CoT for unpaired boxes as</label><input type="text" id="co_unpaired_uid_prefix" style="width:70px"><span class="small">+ box name</span>
+        <label style="margin-left:14px">DJI link considered lost after<input type="number" step="0.5" id="co_dji_stale_s" style="width:60px"> s</label>
+        <div class="small mono">drone CoT sent: <span id="dcot2">0</span></div></div>
+      <div><h4 style="margin:0 0 4px;font:600 11px Menlo,monospace;color:var(--muted)">STATUS</h4><div class="status" id="cotstatus"></div></div>
+    </div>
+
+    <!-- Log -->
+    <div class="tab" id="tab-log" style="grid-template-columns:1fr;align-content:start;gap:10px">
+      <div class="box"><div class="field"><span>NMEA log path</span><input type="text" id="l_nmea_dir" style="width:320px"></div>
+        <div class="small mono" id="nmeafile" style="margin:4px 0">—</div>
+        <div style="display:flex;gap:10px;align-items:center"><span>logger status</span><span class="led" id="ledNmea"></span><span class="mono" id="nmealines">0</span><button id="btnLog" class="toggle">Log data</button></div></div>
+      <div class="box"><div class="field"><span>Exercise name</span><input type="text" id="l_event_name" style="width:160px">
+        <span>Split log path</span><input type="text" id="l_split_dir" style="width:320px"></div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:6px"><span>split logger status</span><span class="led" id="ledSplit"></span><span class="mono" id="csvrows">0</span><button id="btnSplit" class="toggle">Enable split log</button></div>
+        <div class="small mono" id="csvfiles" style="margin-top:4px"></div></div>
+      <div class="box"><label><input type="checkbox" id="l_inject_rx_timestamp"> Inject $RXTIMESTAMP before $RFMSGEND (receipt time for latency analysis)</label></div>
+    </div>
+
+    <!-- Drones (Cosmostreamer) -->
+    <div class="tab" id="tab-drones" style="grid-template-columns:1fr;align-content:start;gap:10px">
+      <div style="overflow:auto"><table class="grid" id="dgrid"><thead><tr>
+        <th>Box</th><th>IP</th><th>Type</th><th>Lic</th><th>Link</th><th>Drone</th><th>Tracker</th><th>Source</th><th>Lat</th><th>Lng</th><th>Alt rel</th><th>Sats</th><th>Yaw</th><th>Speed</th><th>Batt</th><th>RC</th><th>Mode</th><th>Flying</th><th>RTH</th><th>Age</th><th>Video</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="small">Pair each box with the puck mounted on that drone. A paired drone is one CoT entity (the tracker's uid and callsign): position comes from the DJI link while it is alive and falls back to the 915 MHz tracker when it is not — the <b>Source</b> column shows which. Boxes appear here by themselves when they are on the same network (discovery on) or when listed under Cosmostreamer boxes in the connection panel.</div>
+      <div class="box"><h4>Raw telemetry (last text block per box)</h4><div class="status" id="draw" style="height:140px"></div></div>
+    </div>
+
+    <!-- Mission planner -->
+    <div class="tab" id="tab-mission" style="grid-template-columns:400px 1fr;gap:10px">
+      <div class="side" style="overflow:auto">
+        <div class="box"><h4>Missions</h4>
+          <div style="display:flex;gap:6px;align-items:center"><select id="m_list" style="width:170px"></select><button id="m_new">New</button><button id="m_del">Delete</button></div>
+          <div class="field" style="margin-top:6px"><span>Name</span><input type="text" id="m_name" style="width:160px">
+            <span>Speed [m/s]</span><input type="number" id="m_speed" step="0.5">
+            <span>Height [m, above take-off]</span><input type="number" id="m_height" step="1">
+            <span>RTH height [m]</span><input type="number" id="m_rth" step="1">
+            <span>Finish action</span><select id="m_finish"></select>
+            <span>Heading</span><select id="m_heading"><option value="followWayline">follow wayline</option><option value="manually">manual</option><option value="fixed">fixed</option></select>
+            <span>Drone type (WPML enum)</span><select id="m_drone"></select></div>
+          <div class="small mono" id="m_stats" style="margin-top:6px"></div>
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="m_save" class="primary">Save</button><a id="m_kmz" href="#" class="mono" style="align-self:center">download .kmz</a><button id="m_clear">Clear waypoints</button></div></div>
+        <div class="box"><h4>Waypoints <span class="small" style="text-transform:none;letter-spacing:0">(click the map to add, drag to move)</span></h4>
+          <table class="grid" id="m_wps"><thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Height</th><th>Speed</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="box"><h4>Fly it</h4>
+          <div class="field"><span>Box</span><select id="m_box"></select></div>
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="m_upload">Upload to box</button><button data-act="take_control" class="dcmd">Take control</button><button data-act="start" class="dcmd primary">Start mission</button><button data-act="pause" class="dcmd">Pause</button><button data-act="resume" class="dcmd">Resume</button><button data-act="stop" class="dcmd">Stop</button><button data-act="rth" class="dcmd" style="color:var(--bad)">RTH</button><button data-act="land" class="dcmd" style="color:var(--bad)">Land</button><button data-act="release_control" class="dcmd">Release control</button></div>
+          <div class="small" id="m_warn" style="margin-top:6px;color:var(--warn)">Upload uses the box's own web upload (documented). The start/pause/stop command strings are Cosmostreamer PRO-licence commands that have <b>not been verified on hardware yet</b> — edit them in sitgs.json → cosmo.mission_cmds once confirmed, and every command asks before it is sent.</div>
+          <div class="status" id="m_log" style="height:80px;margin-top:6px"></div></div>
+      </div>
+      <div id="mmap" style="min-height:420px;border:1px solid var(--line);border-radius:3px"></div>
+    </div>
+
+    <!-- Video wall (MediaMTX) -->
+    <div class="tab" id="tab-video" style="grid-template-columns:1fr;align-content:start;gap:8px">
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <label style="flex-direction:column;align-items:start">MediaMTX WebRTC base URL<input type="text" id="mm_base_url" style="width:240px"></label>
+        <label><input type="checkbox" id="mm_record"> record every stream</label>
+        <a href="/mediamtx.yml" class="mono" download="mediamtx.yml">download mediamtx.yml</a>
+        <button id="v_reload">Reconnect tiles</button>
+        <span class="small">One tile per discovered box, played over WebRTC from MediaMTX (path = box name, lower-case). Run <span class="mono">mediamtx mediamtx.yml</span> on the video machine.</span>
+      </div>
+      <div id="vwall" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:8px"></div>
+    </div>
+
+    <!-- KML out -->
+    <div class="tab" id="tab-kml" style="grid-template-columns:1fr;align-content:start;gap:10px">
+      <div class="box"><label><input type="checkbox" id="k_enabled"> Write KML / GeoJSON files</label>
+        <div class="field" style="margin-top:6px"><span>KML file</span><input type="text" id="k_path" style="width:320px">
+          <span>GeoJSON file</span><input type="text" id="k_geojson_path" style="width:320px">
+          <span>Refresh interval [s]</span><input type="number" step="0.5" id="k_interval_s">
+          <span>Trail points</span><input type="number" id="k_trail_points"></div></div>
+      <div class="box"><h4>Live links (no file needed)</h4>
+        <div>Google Earth network link: <a id="lnkKml" href="/link.kml" class="mono">/link.kml</a> · raw: <a href="/live.kml" class="mono">/live.kml</a> · <a href="/live.geojson" class="mono">/live.geojson</a></div>
+        <div class="small">Open /link.kml in Google Earth and it refreshes on the interval above. Only trackers younger than the data-age tolerance are written.</div></div>
+    </div>
+
+    <!-- Overview -->
+    <div class="tab two" id="tab-overview" style="grid-template-columns:1fr 360px">
+      <div id="map"></div>
+      <div class="side">
+        <div class="box"><h4>Trackers</h4>
+          <table class="grid" id="names"><thead><tr><th>ID</th><th>UID</th><th>Callsign</th><th>CoT type (opt)</th><th>Msgs</th></tr></thead><tbody></tbody></table>
+          <div class="small" style="margin-top:4px">Callsign shows on the TAK icon; leave CoT type blank to use the global type.</div></div>
+        <div class="box"><label><input type="checkbox" id="satmap"> Satellite basemap</label> <button id="btnFit">Fit to trackers</button></div>
+      </div>
+    </div>
+
+    <!-- Debug -->
+    <div class="tab" id="tab-debug" style="grid-template-columns:1fr;align-content:start;gap:10px">
+      <div class="box"><h4>Parser</h4><div class="mono small" id="dbgstats"></div></div>
+      <div class="box"><h4>Replay a recording</h4>
+        <div style="display:flex;gap:8px;align-items:end"><label style="flex-direction:column;align-items:start">file (relative to sitgs folder)<input type="text" id="r_path" value="capture.nmea" style="width:260px"></label>
+        <label style="flex-direction:column;align-items:start">speed (reports/s, 0 = max)<input type="number" id="r_speed" value="1" step="0.5"></label>
+        <button id="btnReplay">Replay</button><button id="btnClear">Clear trackers</button></div></div>
+      <div class="box"><h4>Event log</h4><div class="status" id="dbglog" style="height:260px"></div></div>
+    </div>
+  </div>
+</div>
+</main>
+<script src="/static/leaflet.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let cfg=null, cotTypes=[], state=null, dirty={}, saveTimer=null;
+const api=(p,b)=>fetch(p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{}).then(r=>r.json());
+
+// ---------- tabs
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('tab-'+b.dataset.tab).classList.add('active');if(b.dataset.tab=='overview'&&map)setTimeout(()=>map.invalidateSize(),50);if(b.dataset.tab=='mission')setTimeout(()=>{if(mmap){mmap.invalidateSize();if(!mFitted&&state){const t=state.trackers.find(x=>x.lat!=null);if(t){mmap.setView([t.lat,t.lon],16);mFitted=true}}}},60);if(b.dataset.tab=='video')buildWall();});
+
+// ---------- settings binding: element id -> config path
+const BIND={b_ref_pressure_bar:'barometer.ref_pressure_bar',b_ref_temp_c:'barometer.ref_temp_c',b_ref_altitude_m:'barometer.ref_altitude_m',b_ref_tracker_id:'barometer.ref_tracker_id',
+ data_age_tolerance_s:'data_age_tolerance_s',c_geoid_height_m:'cot.geoid_height_m',c_geoid_auto_update:'cot.geoid_auto_update',c_type:'cot.type',c_period_ms:'cot.period_ms',c_stale_s:'cot.stale_s',
+ c_uid_prefix:'cot.uid_prefix',c_uid_format:'cot.uid_format',c_include_flow_tag:'cot.include_flow_tag',l_nmea_dir:'log.nmea_dir',l_event_name:'log.event_name',l_split_dir:'log.split_dir',
+ l_inject_rx_timestamp:'log.inject_rx_timestamp',k_enabled:'kml.enabled',k_path:'kml.path',k_geojson_path:'kml.geojson_path',k_interval_s:'kml.interval_s',k_trail_points:'kml.trail_points',
+ ctype:'connection.type',cbaud:'connection.baud',chost:'connection.host',ctcp:'connection.tcp_port',cport:'connection.port',
+ co_enabled:'cosmo.enabled',co_discovery:'cosmo.discovery',co_mqtt_enabled:'cosmo.mqtt.enabled',co_mqtt_host:'cosmo.mqtt.host',co_mqtt_port:'cosmo.mqtt.port',co_mqtt_username:'cosmo.mqtt.username',co_mqtt_password:'cosmo.mqtt.password',
+ mm_base_url:'mediamtx.base_url',mm_record:'mediamtx.record',
+ co_video_in_cot:'cosmo.video_in_cot',co_cot_unpaired:'cosmo.cot_unpaired',co_unpaired_uid_prefix:'cosmo.unpaired_uid_prefix',co_dji_stale_s:'cosmo.dji_stale_s'};
+function getPath(o,p){return p.split('.').reduce((a,k)=>a&&a[k],o)}
+function setPath(o,p,v){const ks=p.split('.');let a=o;for(let i=0;i<ks.length-1;i++){a[ks[i]]=a[ks[i]]||{};a=a[ks[i]]}a[ks[ks.length-1]]=v}
+function queueSave(path,val){setPath(dirty,path,val);setPath(cfg,path,val);clearTimeout(saveTimer);saveTimer=setTimeout(flush,400)}
+async function flush(){const d=dirty;dirty={};if(Object.keys(d).length){await api('/api/config',d)}}
+function fillForm(){
+  for(const id in BIND){const el=$(id);const v=getPath(cfg,BIND[id]);if(el.type=='checkbox')el.checked=!!v;else if(el.tagName=='SELECT'&&id=='cport'){/*later*/}else el.value=v??''}
+  document.querySelector(`input[name=bauto][value=${cfg.barometer.auto_update}]`).checked=true;
+  document.querySelector(`input[name=bmode][value=${cfg.barometer.mode}]`).checked=true;
+  $('btnEmit').classList.toggle('on',cfg.cot.enabled);$('btnLog').classList.toggle('on',cfg.log.nmea_enabled);$('btnSplit').classList.toggle('on',cfg.log.split_enabled);
+  $('serialRow').style.display=cfg.connection.type=='serial'?'flex':'none';$('netRow').style.display=cfg.connection.type=='network'?'flex':'none';
+  const sel=$('c_type_sel');sel.innerHTML=cotTypes.map(t=>`<option value="${t[1]}">${t[0]}</option>`).join('')+'<option value="">(custom)</option>';sel.value=cotTypes.some(t=>t[1]==cfg.cot.type)?cfg.cot.type:'';
+  $('co_hosts').value=(cfg.cosmo.manual_hosts||[]).join(', ');
+  renderDest();renderNames();
+  $('hcfg').textContent='config: '+cfgHere+'/sitgs.json';
+}
+for(const id in BIND){const el=$(id);el.addEventListener('change',()=>{let v=el.type=='checkbox'?el.checked:el.value;if(el.type=='number')v=Number(v);queueSave(BIND[id],v);if(id=='ctype'){$('serialRow').style.display=v=='serial'?'flex':'none';$('netRow').style.display=v=='network'?'flex':'none'}})}
+document.querySelectorAll('input[name=bauto]').forEach(r=>r.onchange=()=>queueSave('barometer.auto_update',r.value));
+document.querySelectorAll('input[name=bmode]').forEach(r=>r.onchange=()=>queueSave('barometer.mode',r.value));
+$('co_hosts').onchange=()=>{cfg.cosmo.manual_hosts=$('co_hosts').value.split(',').map(x=>x.trim()).filter(Boolean);api('/api/config',{cosmo:{manual_hosts:cfg.cosmo.manual_hosts}})};
+$('c_type_sel').onchange=e=>{if(e.target.value){$('c_type').value=e.target.value;queueSave('cot.type',e.target.value)}};
+$('btnEmit').onclick=()=>{cfg.cot.enabled=!cfg.cot.enabled;$('btnEmit').classList.toggle('on',cfg.cot.enabled);api('/api/config',{cot:{enabled:cfg.cot.enabled}})};
+$('btnLog').onclick=()=>{cfg.log.nmea_enabled=!cfg.log.nmea_enabled;$('btnLog').classList.toggle('on',cfg.log.nmea_enabled);api('/api/config',{log:{nmea_enabled:cfg.log.nmea_enabled}})};
+$('btnSplit').onclick=()=>{cfg.log.split_enabled=!cfg.log.split_enabled;$('btnSplit').classList.toggle('on',cfg.log.split_enabled);api('/api/config',{log:{split_enabled:cfg.log.split_enabled}})};
+
+// ---------- destinations table
+function renderDest(){const tb=$('dest').querySelector('tbody');tb.innerHTML=cfg.cot.destinations.map((d,i)=>`<tr data-i="${i}"><td><input type="checkbox" class="d" data-k="enabled" ${d.enabled!==false?'checked':''}></td>
+<td><input type="text" class="d" data-k="host" value="${d.host}"></td><td><input type="number" class="d" data-k="port" value="${d.port}"></td>
+<td><input type="text" class="d" data-k="iface" value="${d.iface||'0.0.0.0'}"></td><td><input type="number" class="d" data-k="ttl" value="${d.ttl||2}"></td><td><button class="del">✕</button></td></tr>`).join('');
+ tb.querySelectorAll('.d').forEach(el=>el.onchange=()=>{const i=+el.closest('tr').dataset.i;const k=el.dataset.k;cfg.cot.destinations[i][k]=el.type=='checkbox'?el.checked:(el.type=='number'?Number(el.value):el.value);api('/api/config',{cot:{destinations:cfg.cot.destinations}})});
+ tb.querySelectorAll('.del').forEach(el=>el.onclick=()=>{cfg.cot.destinations.splice(+el.closest('tr').dataset.i,1);api('/api/config',{cot:{destinations:cfg.cot.destinations}});renderDest()});}
+$('btnAddDest').onclick=()=>{cfg.cot.destinations.push({enabled:true,host:'127.0.0.1',port:1800,iface:'0.0.0.0',ttl:2});api('/api/config',{cot:{destinations:cfg.cot.destinations}});renderDest()};
+
+// ---------- tracker names (Overview)
+function renderNames(){const ids=new Set([...(state?state.trackers.map(t=>String(t.id)):[]),...Object.keys(cfg.trackers)]);const tb=$('names').querySelector('tbody');
+ const cur={};tb.querySelectorAll('tr').forEach(r=>cur[r.dataset.id]=r);
+ tb.innerHTML='';[...ids].sort((a,b)=>a-b).forEach(id=>{const t=cfg.trackers[id]||{};const st=state&&state.trackers.find(x=>String(x.id)==id);
+  const tr=document.createElement('tr');tr.dataset.id=id;tr.innerHTML=`<td>${id}</td><td class="mono">${uidOf(+id)}</td><td><input type="text" class="cs" value="${t.callsign||''}" style="width:130px"></td><td><input type="text" class="ct" value="${t.cot_type||''}" style="width:110px"></td><td>${st?st.msg_count:''}</td>`;tb.appendChild(tr);
+  tr.querySelectorAll('input').forEach(el=>el.onchange=()=>{cfg.trackers[id]=cfg.trackers[id]||{};cfg.trackers[id].callsign=tr.querySelector('.cs').value;cfg.trackers[id].cot_type=tr.querySelector('.ct').value;if(!cfg.trackers[id].callsign&&!cfg.trackers[id].cot_type)delete cfg.trackers[id];api('/api/config',{trackers:cfg.trackers})});});}
+function uidOf(id){try{const m=cfg.cot.uid_format.match(/%0?(\d*)d/);const w=m&&m[1]?+m[1]:0;return cfg.cot.uid_prefix+String(id).padStart(w,'0')}catch(e){return cfg.cot.uid_prefix+id}}
+
+// ---------- connection
+async function refreshPorts(){const r=await api('/api/ports');const sel=$('cport');const cur=cfg.connection.port;sel.innerHTML='<option value="auto">auto ('+(r.auto||'none found')+')</option>'+r.ports.map(p=>`<option value="${p.device}">${p.device}  ${p.description}</option>`).join('');sel.value=cur;if(sel.value!==cur)sel.value='auto'}
+$('btnRefresh').onclick=refreshPorts;
+$('btnConnect').onclick=async()=>{await flush();if(state&&state.connected){await api('/api/disconnect',{})}else{await api('/api/connect',{})}};
+$('btnReplay').onclick=()=>api('/api/replay',{path:$('r_path').value,speed:Number($('r_speed').value)});
+$('btnClear').onclick=()=>api('/api/clear',{});
+
+// ---------- map
+const hasMap=typeof L!=='undefined';let map=null,osm=null,sat=null;
+if(hasMap){map=L.map('map').setView([45.4,-75.7],5);
+ osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+ sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Esri'});
+ $('satmap').onchange=e=>{if(e.target.checked){map.removeLayer(osm);sat.addTo(map)}else{map.removeLayer(sat);osm.addTo(map)}};
+}else{$('map').textContent='map library not loaded';}
+const markers={},trails={};let fitted=false;
+$('btnFit').onclick=()=>{if(!hasMap)return;const ll=Object.values(markers).map(m=>m.getLatLng());if(ll.length)map.fitBounds(L.latLngBounds(ll).pad(0.3))};
+
+// ---------- plots
+const COLORS=['#0e7c86','#c0392b','#2b6cb0','#c98a12','#6b3fa0','#2b9a48','#d35400','#7f8c8d','#16a085','#8e44ad'];
+function colorFor(id){const s=String(id);let h=0;if(/^\d+$/.test(s))h=+s;else for(const ch of s)h=(h*31+ch.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
+function sizeCanvas(c){const r=c.getBoundingClientRect();if(c.width!=Math.floor(r.width*devicePixelRatio)){c.width=Math.floor(r.width*devicePixelRatio);c.height=Math.floor(c.getAttribute('height')*devicePixelRatio)}return c.getContext('2d')}
+function drawTimeline(s){const c=$('cvTimeline'),g=sizeCanvas(c),W=c.width,H=c.height,ids=Object.keys(s.timeline).sort((a,b)=>a-b),win=s.timeline_window_s;g.clearRect(0,0,W,H);
+ const lab=60*devicePixelRatio,rowH=Math.max(8,(H-14*devicePixelRatio)/Math.max(1,ids.length));g.font=`${9*devicePixelRatio}px Menlo,monospace`;
+ ids.forEach((id,r)=>{const y=r*rowH+2;g.fillStyle=colorFor(id);g.fillText(String(id).slice(0,9),2,y+rowH*0.8);for(const [t] of s.timeline[id]){const x=lab+(t/win)*(W-lab-4);g.fillRect(x,y,1.5*devicePixelRatio,rowH-3)}});
+ g.fillStyle='#9aa8b4';for(let k=0;k<=4;k++){const x=lab+(k/4)*(W-lab-4);g.fillRect(x,H-3*devicePixelRatio,1,3*devicePixelRatio)}}
+function drawSlots(s){const c=$('cvSlots'),g=sizeCanvas(c),W=c.width,H=c.height,win=s.timeline_window_s,pad=20*devicePixelRatio,nslots=Math.round(1000/(cfg?cfg.tdma_slot_ms:50));g.clearRect(0,0,W,H);
+ g.strokeStyle='#e3e8ec';g.font=`${9*devicePixelRatio}px Menlo,monospace`;g.fillStyle='#9aa8b4';
+ for(let k=0;k<=nslots;k+=5){const y=H-4-(k/nslots)*(H-10);g.beginPath();g.moveTo(pad,y);g.lineTo(W,y);g.stroke();g.fillText(k,2,y+3)}
+ for(const id in s.timeline){g.fillStyle=colorFor(id);for(const [t,slot] of s.timeline[id]){if(slot==null)continue;const x=pad+(t/win)*(W-pad-4);const y=H-4-(slot/nslots)*(H-10);g.fillRect(x-1,y-2,3*devicePixelRatio,3*devicePixelRatio)}}}
+
+// ---------- state poll
+function f(v,d){return v==null?'':(typeof v=='number'?v.toFixed(d):v)}
+function rssiPct(r){return r==null?0:Math.max(0,Math.min(100,(r+120)/70*100))}
+async function tick(){try{const s=await api('/api/state');state=s;
+ $('up').textContent=Math.round(s.uptime_s);$('lines').textContent=s.lines;$('reports').textContent=s.reports;$('bad').textContent=s.bad_sentences;$('ghosts').textContent=s.ghosts;$('bytes').textContent=s.bytes;
+ $('connStatus').textContent=s.conn_status;$('ledConn').className='led '+(s.connected?'on':(s.conn_status.startsWith('error')||s.conn_status.startsWith('no ')?'warn':'off'));
+ $('btnConnect').textContent=s.connected?'Disconnect':'Connect';$('btnConnect').classList.toggle('on',s.connected);
+ const ra=$('raw');const atBottom=ra.scrollHeight-ra.scrollTop-ra.clientHeight<30;ra.value=s.raw.join('\n');if(atBottom)ra.scrollTop=ra.scrollHeight;
+ const tol=s.data_age_tolerance_s;
+ $('grid').querySelector('tbody').innerHTML=s.trackers.map(t=>{const cls=t.age_s==null?'dead':(t.age_s>tol?'stale':'');return `<tr class="${cls}"><td><b>${t.id}</b></td><td class="mono">${f(t.rssi,0)}</td><td><span class="bar"><i style="width:${rssiPct(t.rssi)}%"></i></span></td><td>${t.pressure_pa==null?'':(t.pressure_pa/1e5).toFixed(5)}</td><td>${f(t.temp_c,0)}</td><td>${f(t.gps_alt,1)}</td><td>${f(t.baro_alt,1)}</td><td>${f(t.age_s,1)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)+' V'}</td><td><span class="led ${t.fix_valid?'on':'off'}"></span></td><td>${t.nsat??''}</td></tr>`}).join('');
+ $('sealevel').textContent=s.sea_level_bar;const g=s.trackers.find(t=>t.geoid_sep!=null);$('geoid_gps').value=g?(-g.geoid_sep).toFixed(1):'';
+ $('cotsent').textContent=s.cot_sent;$('coterr').textContent=s.cot_errors;$('cotstatus').textContent=s.cot_status.join('\n');
+ $('nmeafile').textContent=s.nmea_path||'(not logging)';$('nmealines').textContent=s.nmea_lines;$('ledNmea').className='led '+(s.nmea_path?'on':'off');
+ $('csvrows').textContent=s.csv_rows;$('ledSplit').className='led '+(cfg&&cfg.log.split_enabled?'on':'off');$('csvfiles').textContent=Object.values(s.csv_files).join('\n');
+ $('dbgstats').textContent=`sentences ok/bad: ${s.lines}/${s.bad_sentences}   reports: ${s.reports}   rejected (noise/wrong dest): ${s.ghosts}   bytes: ${s.bytes}   cot sent: ${s.cot_sent}`;
+ const dl=$('dbglog');const db=dl.scrollHeight-dl.scrollTop-dl.clientHeight<30;dl.textContent=s.debug.join('\n');if(db)dl.scrollTop=dl.scrollHeight;
+ if(hasMap)for(const t of s.trackers){if(t.lat==null)continue;const ll=[t.lat,t.lon],col=colorFor(t.id);
+  if(!markers[t.id]){markers[t.id]=L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9}).addTo(map).bindTooltip(String(t.callsign||t.id),{permanent:true,direction:'right'});trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map)}
+  else{markers[t.id].setLatLng(ll);trails[t.id].setLatLngs(s.trails[t.id]||[]);markers[t.id].setTooltipContent(String(t.callsign||t.id))}
+  markers[t.id].setStyle({opacity:t.age_s>tol?.4:1,fillOpacity:t.age_s>tol?.3:.9});if(!fitted){map.setView(ll,15);fitted=true}}
+ renderDrones(s);
+ if(cfg){drawTimeline(s);drawSlots(s);if($('tab-overview').classList.contains('active'))renderNamesIfChanged(s)}
+}catch(e){$('connStatus').textContent='no connection to sitgs backend';$('ledConn').className='led warn'}}
+const dmarkers={},dtrails={},dlinks={};
+function renderDrones(s){const c=s.cosmo||{boxes:[]};$('nboxes').textContent=c.boxes.filter(b=>b.online).length;$('dcot').textContent=c.drone_cot_sent||0;$('dcot2').textContent=c.drone_cot_sent||0;
+ $('co_status').textContent=`packets ${c.packets||0}`+(c.mqtt?`  · mqtt: ${c.mqtt}`:'');
+ const tids=[...new Set([...(s.trackers.map(t=>t.id)),...Object.values(c.pairs||{}).filter(Boolean).map(Number)])].sort((a,b)=>a-b);
+ const tb=$('dgrid').querySelector('tbody');const focused=document.activeElement&&tb.contains(document.activeElement);
+ if(!focused){tb.innerHTML=c.boxes.map(b=>{const opts='<option value="">— none —</option>'+tids.map(t=>`<option value="${t}" ${String(b.tracker_id)==String(t)?'selected':''}>${t}</option>`).join('');
+  const srcCls=b.source=='DJI'?'ok':(b.source=='LoRa'?'stale':'');const cls=b.online?'':'dead';
+  return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td>${b.license==null?'':(b.license?'✓':'✗')}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
+  tb.querySelectorAll('select.pair').forEach(el=>el.onchange=()=>{const key=el.closest('tr').dataset.key;cfg.cosmo.pairs=cfg.cosmo.pairs||{};if(el.value)cfg.cosmo.pairs[key]=Number(el.value);else delete cfg.cosmo.pairs[key];api('/api/config',{cosmo:{pairs:cfg.cosmo.pairs}})});}
+ const mb=$('m_box');if(!(document.activeElement===mb)){const cur=mb.value;mb.innerHTML=c.boxes.filter(b=>b.transport=='udp').map(b=>`<option value="${b.key}">${b.name||b.key} (${b.host})</option>`).join('');if(cur)mb.value=cur}
+ $('draw').textContent=c.boxes.map(b=>`${b.name||b.key}: connected=${b.connected} fix=${b.fix} lat=${b.lat} lng=${b.lng} alt=${b.alt_rel} sats=${b.sats} yaw=${b.yaw} hspeed=${b.hspeed} batt=${b.battery} mode=${b.flight_mode} in_flight=${b.in_flight} rth=${b.rth} model=${b.model} sn=${b.sn} takeoff_msl=${b.takeoff_msl}`).join('\n');
+ if(!hasMap)return;
+ for(const b of c.boxes){if(b.lat==null||!b.fix)continue;const ll=[b.lat,b.lng],col=colorFor(b.tracker_id||b.name);
+  if(!dmarkers[b.key]){dmarkers[b.key]=L.marker(ll,{icon:L.divIcon({className:'',html:`<div style="width:14px;height:14px;background:${col};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 3px #0008"></div>`,iconSize:[14,14],iconAnchor:[7,7]})}).addTo(map).bindTooltip('DJI '+(b.name||b.key),{permanent:true,direction:'left'});dtrails[b.key]=L.polyline(b.trail||[ll],{color:col,weight:2,dashArray:'4 4',opacity:.8}).addTo(map)}
+  else{dmarkers[b.key].setLatLng(ll);dtrails[b.key].setLatLngs(b.trail||[])}
+  dmarkers[b.key].setOpacity(b.connected?1:.35);
+  const tr=b.tracker_id&&s.trackers.find(t=>String(t.id)==String(b.tracker_id));
+  if(tr&&tr.lat!=null){if(!dlinks[b.key])dlinks[b.key]=L.polyline([ll,[tr.lat,tr.lon]],{color:'#c0392b',weight:1.5,opacity:.8}).addTo(map);else dlinks[b.key].setLatLngs([ll,[tr.lat,tr.lon]])}
+  else if(dlinks[b.key]){map.removeLayer(dlinks[b.key]);delete dlinks[b.key]}}}
+let lastIds='';function renderNamesIfChanged(s){const ids=s.trackers.map(t=>t.id+':'+t.msg_count).join(',');if(ids!=lastIds){lastIds=ids;if(!document.activeElement||!$('names').contains(document.activeElement))renderNames()}}
+// ---------- mission planner
+let mmap=null,mFitted=false,mission=null,mMarkers=[],mLine=null,mEnums={},mFinish=[];
+if(hasMap){mmap=L.map('mmap').setView([45.4,-75.7],5);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(mmap);
+ mmap.on('click',e=>{if(!mission)newMission();mission.waypoints.push({lat:+e.latlng.lat.toFixed(7),lon:+e.latlng.lng.toFixed(7)});drawMission();});}
+function newMission(){mission={name:'mission'+(Math.floor(Date.now()/1000)%10000),speed:5,height:60,rth_height:50,finish:'goHome',heading:'followWayline',drone_enum:77,drone_sub_enum:0,waypoints:[]};fillMission();drawMission()}
+function fillMission(){if(!mission)return;$('m_name').value=mission.name;$('m_speed').value=mission.speed;$('m_height').value=mission.height;$('m_rth').value=mission.rth_height;$('m_finish').value=mission.finish;$('m_heading').value=mission.heading||'followWayline';
+ const key=Object.keys(mEnums).find(k=>mEnums[k][0]==mission.drone_enum&&mEnums[k][1]==mission.drone_sub_enum);$('m_drone').value=key||'';$('m_kmz').href='/missions/'+mission.name+'.kmz';}
+function readMission(){if(!mission)return;mission.name=$('m_name').value;mission.speed=+$('m_speed').value;mission.height=+$('m_height').value;mission.rth_height=+$('m_rth').value;mission.finish=$('m_finish').value;mission.heading=$('m_heading').value;const e=mEnums[$('m_drone').value];if(e){mission.drone_enum=e[0];mission.drone_sub_enum=e[1]}}
+function drawMission(){if(!hasMap)return;mMarkers.forEach(m=>mmap.removeLayer(m));mMarkers=[];if(mLine){mmap.removeLayer(mLine);mLine=null}
+ if(!mission)return;const pts=mission.waypoints.map(w=>[w.lat,w.lon]);
+ mission.waypoints.forEach((w,i)=>{const m=L.marker([w.lat,w.lon],{draggable:true,icon:L.divIcon({className:'',html:`<div style="width:22px;height:22px;border-radius:50%;background:#0e7c86;color:#fff;font:600 11px Menlo,monospace;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 0 3px #0008">${i+1}</div>`,iconSize:[22,22],iconAnchor:[11,11]})}).addTo(mmap);
+  m.on('drag',e=>{w.lat=+e.latlng.lat.toFixed(7);w.lon=+e.latlng.lng.toFixed(7);if(mLine)mLine.setLatLngs(mission.waypoints.map(x=>[x.lat,x.lon]));renderWps()});mMarkers.push(m)});
+ if(pts.length>1)mLine=L.polyline(pts,{color:'#0e7c86',weight:3,opacity:.8}).addTo(mmap);renderWps();}
+function renderWps(){const tb=$('m_wps').querySelector('tbody');if(document.activeElement&&tb.contains(document.activeElement))return;
+ tb.innerHTML=(mission?mission.waypoints:[]).map((w,i)=>`<tr data-i="${i}"><td>${i+1}</td><td class="mono">${w.lat.toFixed(6)}</td><td class="mono">${w.lon.toFixed(6)}</td><td><input type="number" class="wh" value="${w.height??''}" placeholder="${mission.height}" style="width:60px"></td><td><input type="number" class="ws" step="0.5" value="${w.speed??''}" placeholder="${mission.speed}" style="width:55px"></td><td><button class="wdel">✕</button></td></tr>`).join('');
+ tb.querySelectorAll('tr').forEach(tr=>{const i=+tr.dataset.i;tr.querySelector('.wh').onchange=e=>{mission.waypoints[i].height=e.target.value===''?undefined:+e.target.value};tr.querySelector('.ws').onchange=e=>{mission.waypoints[i].speed=e.target.value===''?undefined:+e.target.value};tr.querySelector('.wdel').onclick=()=>{mission.waypoints.splice(i,1);drawMission()}});
+ let d=0;for(let i=1;i<(mission?mission.waypoints.length:0);i++){d+=mmap?mmap.distance(mission.waypoints[i-1],[mission.waypoints[i].lat,mission.waypoints[i].lon]):0}
+ $('m_stats').textContent=mission?`${mission.waypoints.length} waypoints · ${d.toFixed(0)} m · ~${(d/Math.max(0.5,+$('m_speed').value||5)).toFixed(0)} s at ${$('m_speed').value} m/s`:'';}
+async function loadMissions(sel){const r=await api('/api/missions');mEnums=r.drone_enums;mFinish=r.finish_actions;
+ $('m_finish').innerHTML=mFinish.map(f=>`<option>${f}</option>`).join('');$('m_drone').innerHTML=Object.keys(mEnums).map(k=>`<option>${k}</option>`).join('');
+ $('m_list').innerHTML='<option value="">— select —</option>'+r.missions.map(m=>`<option value="${m.name}">${m.name} (${m.stats.count} wp, ${m.stats.distance_m} m)</option>`).join('');
+ if(sel){$('m_list').value=sel;mission=r.missions.find(m=>m.name==sel)||mission;fillMission();drawMission()}}
+$('m_list').onchange=async()=>{const r=await api('/api/missions');mission=r.missions.find(m=>m.name==$('m_list').value)||null;if(mission){fillMission();drawMission();if(mission.waypoints.length&&mmap)mmap.fitBounds(L.latLngBounds(mission.waypoints.map(w=>[w.lat,w.lon])).pad(0.3))}};
+$('m_new').onclick=newMission;$('m_clear').onclick=()=>{if(mission){mission.waypoints=[];drawMission()}};
+$('m_del').onclick=async()=>{if(!mission)return;if(!confirm('Delete mission '+mission.name+'?'))return;await api('/api/mission/delete',{name:mission.name});mission=null;drawMission();loadMissions()};
+$('m_save').onclick=async()=>{if(!mission)return;readMission();const r=await api('/api/mission/save',mission);mLog(r.ok?'saved '+r.mission.name+' ('+r.stats.distance_m+' m)':'save failed '+r.error);loadMissions(r.mission&&r.mission.name)};
+$('m_upload').onclick=async()=>{if(!mission)return;readMission();await api('/api/mission/save',mission);const r=await api('/api/mission/upload',{name:mission.name,box_key:$('m_box').value});mLog('upload → '+$('m_box').value+': '+(r.ok?'ok':(r.result||r.error)))};
+document.querySelectorAll('.dcmd').forEach(b=>b.onclick=async()=>{const act=b.dataset.act,box=$('m_box').value;if(!box){mLog('pick a box first');return}
+ if(!confirm(`Send "${act}" to ${box}${act=='start'&&mission?' (mission '+mission.name+')':''}?`))return;const r=await api('/api/mission/cmd',{box_key:box,action:act,name:mission?mission.name:''});mLog((r.ok?'sent ':'FAILED ')+(r.sent||r.error))});
+function mLog(t){const l=$('m_log');l.textContent+=new Date().toLocaleTimeString()+'  '+t+'\n';l.scrollTop=l.scrollHeight}
+['m_speed','m_height'].forEach(id=>$(id).addEventListener('input',renderWps));
+
+// ---------- video wall (WebRTC/WHEP from MediaMTX)
+const wallPcs={};
+async function whep(video,url){const pc=new RTCPeerConnection({iceServers:[]});pc.addTransceiver('video',{direction:'recvonly'});pc.addTransceiver('audio',{direction:'recvonly'});
+ pc.ontrack=e=>{video.srcObject=e.streams[0]};const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+ await new Promise(r=>{if(pc.iceGatheringState==='complete')r();else{pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete')r()};setTimeout(r,1500)}});
+ const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});if(!res.ok)throw new Error('WHEP '+res.status);
+ await pc.setRemoteDescription({type:'answer',sdp:await res.text()});return pc}
+function buildWall(){const c=state&&state.cosmo?state.cosmo.boxes.filter(b=>b.transport=='udp'):[];const base=(cfg&&cfg.mediamtx.base_url||'http://localhost:8889').replace(/\/$/,'');
+ for(const k in wallPcs){try{wallPcs[k].close()}catch(e){}delete wallPcs[k]}
+ $('vwall').innerHTML=c.length?c.map(b=>{const p=(b.name||b.host.replace(/\./g,'-')).replace(/[^A-Za-z0-9_-]+/g,'_').toLowerCase();return `<div class="box" style="padding:4px"><div style="display:flex;justify-content:space-between;font-size:12px"><b>${b.name||b.host}</b><span class="mono small">${base}/${p}</span></div><video id="v_${p}" autoplay muted playsinline style="width:100%;background:#000;aspect-ratio:16/9"></video><div class="small mono" id="vs_${p}">connecting…</div></div>`}).join(''):'<div class="small">No boxes discovered yet — tiles appear once Cosmostreamer boxes are on the network.</div>';
+ c.forEach(async b=>{const p=(b.name||b.host.replace(/\./g,'-')).replace(/[^A-Za-z0-9_-]+/g,'_').toLowerCase();try{wallPcs[p]=await whep($('v_'+p),`${base}/${p}/whep`);$('vs_'+p).textContent='live (WebRTC)'}catch(e){$('vs_'+p).textContent='not available: '+e.message+' — is MediaMTX running with this path?'}});}
+$('v_reload').onclick=buildWall;
+
+let cfgHere='';
+(async()=>{const r=await api('/api/config');cfg=r.config;cotTypes=r.cot_types;cfgHere=r.here;fillForm();await refreshPorts();tick();setInterval(tick,1000);loadMissions()})();
+</script></body></html>

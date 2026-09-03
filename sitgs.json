@@ -1,0 +1,97 @@
+{
+  "connection": {
+    "type": "serial",
+    "port": "auto",
+    "baud": 115200,
+    "host": "192.168.1.50",
+    "tcp_port": 4001,
+    "auto_connect": true,
+    "record_raw": ""
+  },
+  "log": {
+    "nmea_enabled": true,
+    "nmea_dir": "logs/nmea",
+    "split_enabled": true,
+    "split_dir": "logs/csv",
+    "event_name": "TEST",
+    "inject_rx_timestamp": true,
+    "enabled": true,
+    "csv_dir": "logs/csv"
+  },
+  "barometer": {
+    "mode": "disable",
+    "ref_pressure_bar": 1.01325,
+    "ref_temp_c": 15.0,
+    "ref_altitude_m": 0.0,
+    "auto_update": "disable",
+    "ref_tracker_id": null
+  },
+  "cot": {
+    "enabled": true,
+    "type": "a-f-A-C-H-q",
+    "uid_prefix": "TRK.",
+    "uid_format": "%03d",
+    "period_ms": 500,
+    "stale_s": 30,
+    "geoid_height_m": 34.0,
+    "geoid_auto_update": true,
+    "include_flow_tag": false,
+    "destinations": [
+      {
+        "host": "239.2.3.1",
+        "port": 6969,
+        "iface": "0.0.0.0",
+        "ttl": 4
+      },
+      {
+        "host": "127.0.0.1",
+        "port": 1800,
+        "iface": "0.0.0.0",
+        "ttl": 2
+      }
+    ]
+  },
+  "kml": {
+    "enabled": false,
+    "path": "logs/kml/tracks.kml",
+    "geojson_path": "logs/kml/tracks.geojson",
+    "interval_s": 2,
+    "trail_points": 300
+  },
+  "web": {
+    "port": 8090,
+    "enabled": true
+  },
+  "data_age_tolerance_s": 30,
+  "tdma_slot_ms": 50,
+  "filter": {
+    "receiver_address": 111,
+    "require_payload": true
+  },
+  "cosmo": {
+    "enabled": true,
+    "discovery": true,
+    "manual_hosts": [],
+    "mqtt": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 1883,
+      "username": "",
+      "password": ""
+    },
+    "pairs": {},
+    "video_in_cot": true,
+    "cot_unpaired": true,
+    "unpaired_uid_prefix": "DJI.",
+    "dji_stale_s": 2.5
+  },
+  "trackers": {
+    "23": {
+      "callsign": "TRK-023"
+    }
+  },
+  "serial": {
+    "port": "auto",
+    "baud": 115200
+  }
+}
