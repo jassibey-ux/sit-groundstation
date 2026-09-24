@@ -27,6 +27,7 @@ The tool waits for the new serial port and sends the handshake the moment it app
 """
 import argparse, datetime as dt, os, re, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
+from apppaths import DATA_DIR
 import serial, serial.tools.list_ports
 
 HANDSHAKE_WINDOW_S = 6.0
@@ -143,7 +144,7 @@ def logger_id_from(data):
 def main():
     ap = argparse.ArgumentParser(description="Download logs from a SIT GPS tracker puck")
     ap.add_argument("--port", help="serial port (default: wait for a newly plugged puck)")
-    ap.add_argument("--dest", default=os.path.join(HERE, "logs", "puck"))
+    ap.add_argument("--dest", default=os.path.join(DATA_DIR, "logs", "puck"))
     ap.add_argument("--list", action="store_true", help="list files only")
     ap.add_argument("--files", nargs="*", help="only these file names")
     ap.add_argument("--since", help="only files modified on/after this date (YYYY-MM-DD)")

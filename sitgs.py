@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from apppaths import RES_DIR, DATA_DIR
 try:
     import serial, serial.tools.list_ports
 except ImportError:
@@ -258,7 +259,7 @@ class GroundStation:
         self.replay = None
         self.apply_logging()
         self.cosmo = CosmoClient(lambda: self.cfg["cosmo"], self.dbg); self.cosmo.start()
-        self.missions = mission_mod.MissionStore(os.path.join(HERE, "logs", "missions"))
+        self.missions = mission_mod.MissionStore(os.path.join(DATA_DIR, "logs", "missions"))
         self.drone_cot_sent = 0
         threading.Thread(target=self.kml_loop, daemon=True).start()
         threading.Thread(target=self.fusion_loop, daemon=True).start()
@@ -297,7 +298,7 @@ class GroundStation:
         L = self.cfg["log"]
         if self.session_stamp is None: self.session_stamp = dt.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         if L["nmea_enabled"] and self.nmea_fh is None:
-            d = os.path.join(HERE, L["nmea_dir"]); os.makedirs(d, exist_ok=True)
+            d = os.path.join(DATA_DIR, L["nmea_dir"]); os.makedirs(d, exist_ok=True)
             self.nmea_path = os.path.join(d, "%s_RFReceiverRSSILog.nmea" % self.session_stamp)
             self.nmea_fh = open(self.nmea_path, "a", buffering=1); self.dbg("NMEA log opened %s" % self.nmea_path)
         elif not L["nmea_enabled"] and self.nmea_fh is not None:
@@ -365,7 +366,7 @@ class GroundStation:
         if not L["split_enabled"]: return
         fh = self.csv_fhs.get(tr.id)
         if fh is None:
-            d = os.path.join(HERE, L["split_dir"]); os.makedirs(d, exist_ok=True)
+            d = os.path.join(DATA_DIR, L["split_dir"]); os.makedirs(d, exist_ok=True)
             path = os.path.join(d, "%s_%s_ID%03d.csv" % (self.session_stamp, L["event_name"], tr.id)); new = not os.path.exists(path)
             f = open(path, "a", newline="", buffering=1); w = csv.writer(f)
             if new: w.writerow(self.CSV_COLS)
@@ -460,7 +461,7 @@ class GroundStation:
         k = self.cfg["kml"]
         for path, data in ((k["path"], self.build_kml()), (k.get("geojson_path"), self.build_geojson())):
             if not path: continue
-            p = os.path.join(HERE, path); os.makedirs(os.path.dirname(p), exist_ok=True)
+            p = os.path.join(DATA_DIR, path); os.makedirs(os.path.dirname(p), exist_ok=True)
             tmp = p + ".tmp"
             with open(tmp, "w") as f: f.write(data)
             os.replace(tmp, p)
@@ -486,7 +487,7 @@ class GroundStation:
             if port == "auto":
                 port = find_port()
                 if not port: self.conn_status = "no serial port found"; return
-        rec = open(os.path.join(HERE, c["record_raw"]), "ab") if c.get("record_raw") else None
+        rec = open(os.path.join(DATA_DIR, c["record_raw"]), "ab") if c.get("record_raw") else None
         while not self.conn_stop.is_set():
             try:
                 self.conn_status = "opening %s" % port
@@ -584,7 +585,7 @@ def make_handler(gs, page):
         def do_GET(self):
             p = self.path.split("?")[0]
             if p == "/api/state": self._send(200, "application/json", json.dumps(gs.snapshot()))
-            elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "here": HERE}))
+            elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "here": DATA_DIR}))
             elif p == "/api/ports": self._send(200, "application/json", json.dumps({"ports": list_ports(), "auto": find_port(probe=False)}))
             elif p == "/api/missions": self._send(200, "application/json", json.dumps({"missions": gs.missions.list(), "drone_enums": mission_mod.DRONE_ENUMS, "finish_actions": mission_mod.FINISH_ACTIONS}))
             elif p.startswith("/missions/") and p.endswith(".kmz"):
@@ -601,7 +602,7 @@ def make_handler(gs, page):
                            '<Link><href>http://%s/live.kml</href><refreshMode>onInterval</refreshMode><refreshInterval>%s</refreshInterval></Link></NetworkLink></kml>'
                            % (self.headers.get("Host", "localhost"), gs.cfg["kml"]["interval_s"]))
             elif p.startswith("/static/") and ".." not in p:
-                fp = os.path.join(HERE, p.lstrip("/"))
+                fp = os.path.join(RES_DIR, p.lstrip("/"))
                 if os.path.isfile(fp):
                     ct = {"js": "application/javascript", "css": "text/css", "png": "image/png"}.get(fp.rsplit(".", 1)[-1], "application/octet-stream")
                     with open(fp, "rb") as f: self._send(200, ct, f.read())
@@ -615,7 +616,7 @@ def make_handler(gs, page):
                     if body: gs.update_config({"connection": body})
                     gs.connect(); self._send(200, "application/json", '{"ok":true}')
                 elif p == "/api/disconnect": gs.disconnect(); self._send(200, "application/json", '{"ok":true}')
-                elif p == "/api/replay": gs.replay_file(os.path.join(HERE, body["path"]), float(body.get("speed", 1))); self._send(200, "application/json", '{"ok":true}')
+                elif p == "/api/replay": gs.replay_file(os.path.join(DATA_DIR, body["path"]), float(body.get("speed", 1))); self._send(200, "application/json", '{"ok":true}')
                 elif p == "/api/mission/save": m = gs.missions.save(body); self._send(200, "application/json", json.dumps({"ok": True, "mission": m, "stats": mission_mod.mission_stats(m)}))
                 elif p == "/api/mission/delete": gs.missions.delete(body["name"]); self._send(200, "application/json", '{"ok":true}')
                 elif p == "/api/mission/upload":
@@ -643,7 +644,7 @@ def make_handler(gs, page):
 
 def main():
     ap = argparse.ArgumentParser(description="SIT GPS-LoRa tracker ground station")
-    ap.add_argument("--config", default=os.path.join(HERE, "sitgs.json"))
+    ap.add_argument("--config", default=os.path.join(DATA_DIR, "sitgs.json"))
     ap.add_argument("--port"); ap.add_argument("--baud", type=int); ap.add_argument("--list-ports", action="store_true")
     ap.add_argument("--record", help="append raw serial bytes to this file"); ap.add_argument("--replay"); ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--web-port", type=int); ap.add_argument("--no-connect", action="store_true")
@@ -660,13 +661,14 @@ def main():
     if args.web_port: cfg["web"]["port"] = args.web_port
     with open(args.config, "w") as f: json.dump(cfg, f, indent=2)
     gs = GroundStation(cfg, args.config)
-    page = open(os.path.join(HERE, "sitgs_ui.html"), "rb").read()
+    page = open(os.path.join(RES_DIR, "sitgs_ui.html"), "rb").read()
     port = int(cfg["web"]["port"])
     try: srv = ThreadingHTTPServer(("0.0.0.0", port), make_handler(gs, page))
     except OSError:
         port += 1; srv = ThreadingHTTPServer(("0.0.0.0", port), make_handler(gs, page))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print("UI: http://localhost:%d" % port)
+    print("Data folder (settings + logs): %s" % DATA_DIR)
     if args.replay: gs.replay_file(args.replay, args.speed)
     elif cfg["connection"].get("auto_connect", True) and not args.no_connect: gs.connect()
     try:

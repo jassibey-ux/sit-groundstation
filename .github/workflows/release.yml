@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: pip install -r requirements-build.txt
+
+      - name: Build
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ "${GITHUB_REF_TYPE}" = "tag" ] || VERSION="dev-${GITHUB_SHA::7}"
+          SITGS_VERSION="$VERSION" python build.py
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          EXE=dist/sitgs; [ "$RUNNER_OS" = "Windows" ] && EXE=dist/sitgs.exe
+          "$EXE" --list-ports
+          # prove bundled UI + replay work: start, poll /api/state, stop
+          "$EXE" --replay capture.nmea --speed 0 --web-port 8099 &
+          PID=$!
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/state > state.json 2>/dev/null; then
+              if python -c "import json,sys; s=json.load(open('state.json')); sys.exit(0 if s['lines'] > 0 else 1)"; then ok=1; break; fi
+            fi
+            sleep 1
+          done
+          kill $PID || true
+          [ -n "$ok" ] || { echo "smoke test failed"; cat state.json 2>/dev/null; exit 1; }
+          python -c "import json; s=json.load(open('state.json')); print('smoke ok: lines=%d trackers=%d' % (s['lines'], len(s['trackers'])))"
+
+      - name: Upload workflow artifact (dispatch runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sitgs-${{ runner.os }}
+          path: release/*.zip
+
+      - name: Attach to release (tag runs)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip

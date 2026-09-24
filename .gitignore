@@ -9,3 +9,9 @@ logs/kml/
 logs/puck/
 logs/missions/
 mediamtx.yml
+
+# build output
+dist/
+build/
+release/
+*.spec

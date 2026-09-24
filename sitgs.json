@@ -71,7 +71,9 @@
   "cosmo": {
     "enabled": true,
     "discovery": true,
-    "manual_hosts": [],
+    "manual_hosts": [
+      "127.0.0.1:5253"
+    ],
     "mqtt": {
       "enabled": false,
       "host": "127.0.0.1",
@@ -79,11 +81,29 @@
       "username": "",
       "password": ""
     },
-    "pairs": {},
+    "pairs": {
+      "127.0.0.1:5253": "157"
+    },
     "video_in_cot": true,
     "cot_unpaired": true,
     "unpaired_uid_prefix": "DJI.",
-    "dji_stale_s": 2.5
+    "dji_stale_s": 2.5,
+    "mission_cmds": {
+      "start": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"start\",\"value2\":\"%NAME%.kmz\"}",
+      "pause": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"pause\"}",
+      "resume": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"resume\"}",
+      "stop": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"stop\"}",
+      "rth": "!{\"cmd\":\"drone\",\"param\":\"rth\",\"value\":\"\"}",
+      "land": "!{\"cmd\":\"drone\",\"param\":\"landing\",\"value\":\"\"}",
+      "take_control": "!{\"cmd\":\"drone\",\"param\":\"control_app\",\"value\":\"1\"}",
+      "release_control": "!{\"cmd\":\"drone\",\"param\":\"control_app\",\"value\":\"0\"}"
+    },
+    "mission_cmds_verified": false
+  },
+  "mediamtx": {
+    "base_url": "http://localhost:8889",
+    "record": true,
+    "record_path": "./recordings/%path/%Y-%m-%d_%H-%M-%S-%f"
   },
   "trackers": {
     "23": {
