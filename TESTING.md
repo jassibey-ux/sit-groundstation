@@ -51,6 +51,16 @@ Run with `--host` open: the server already listens on all interfaces; just
 browse to `http://<this machine's IP>:8090` from the other device. Allow the
 app through the OS firewall if prompted.
 
+## Console status line
+
+The console window shows one live line, updated every second:
+
+    connected COM13 | 1.0 reports/s  8.0 lines/s  2.0 CoT/s | 17008 0.4s ago | bad 0
+
+Rates are averaged over the last ~5 s. One report per second per tracker is the
+normal rate; CoT/s counts every output destination (two destinations = 2.0/s
+for one tracker). A new line is added only when the connection status changes.
+
 ## Tracker IDs
 
 Trackers are shown by their full over-the-air ID, e.g. **17005** = carrier

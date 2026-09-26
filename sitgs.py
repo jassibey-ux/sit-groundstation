@@ -9,7 +9,7 @@ Web reimplementation of the LabVIEW "LoRa GPS RX and Logger" client, tab for tab
 
 Dependency: pyserial (a copy in ./serial works too)
 """
-import argparse, collections, csv, datetime as dt, json, math, os, queue, re, socket, struct, sys, threading, time
+import argparse, collections, csv, datetime as dt, json, math, os, queue, re, shutil, socket, struct, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -883,20 +883,39 @@ def main():
     print("Data folder (settings + logs): %s" % DATA_DIR)
     if args.replay: gs.replay_file(args.replay, args.speed)
     elif cfg["connection"].get("auto_connect", True) and not args.no_connect: gs.connect()
+    # On a terminal: one live line rewritten every second, a new line only when the connection status
+    # changes. Piped/redirected: a plain line every 10 s. This loop holds no locks, so a blocked
+    # console write stalls only the console, never the ground station.
+    live = sys.stdout.isatty()
     try:
-        last_status = None; last_print = 0.0
+        hist = collections.deque(maxlen=6); last_status = None; last_print = 0.0
         while True:
             time.sleep(1)
             try:
-                # console output is kept rare: a blocked console write must never matter
-                if gs.conn_status != last_status or time.time() - last_print >= 30:
-                    s = gs.snapshot(); last_status = s["conn_status"]; last_print = time.time()
-                    print("%-42s lines=%d bad=%d cot=%d trackers=%s" % (s["conn_status"][:42], s["lines"], s["bad_sentences"], s["cot_sent"],
-                                                                        " ".join(str(t["id"]) for t in s["trackers"]) or "-"))
+                line = status_line(gs, hist)
+                if live:
+                    width = max(40, shutil.get_terminal_size((100, 24)).columns - 1)
+                    if last_status is not None and gs.conn_status != last_status: sys.stdout.write("\n")
+                    sys.stdout.write("\r" + line[:width].ljust(width)); sys.stdout.flush()
+                elif gs.conn_status != last_status or time.time() - last_print >= 10:
+                    print(line, flush=True); last_print = time.time()
+                last_status = gs.conn_status
             except Exception as e:
                 gs.dbg("status loop error: %s" % e)
-    except KeyboardInterrupt: pass
+    except KeyboardInterrupt:
+        if live: print()
     return 0
+
+def status_line(gs, hist):
+    """Connection status, rates over the last ~5 s, and each tracker's time since its last report."""
+    now = time.time(); cot = gs.cot.sent
+    hist.append((now, gs.lines, gs.reports, cot))
+    t0, l0, r0, c0 = hist[0]; span = max(now - t0, 1e-6)
+    with gs.lock: trk = [(t.id, t.age()) for t in sorted(gs.tracks.values(), key=lambda t: t.id)]
+    ages = "  ".join("%d %s" % (tid, "%.1fs ago" % a if a is not None else "-") for tid, a in trk[:6]) or "no trackers yet"
+    if len(trk) > 6: ages += "  +%d more" % (len(trk) - 6)
+    return "%s | %.1f reports/s  %.1f lines/s  %.1f CoT/s | %s | bad %d" % (
+        gs.conn_status, (gs.reports - r0) / span, (gs.lines - l0) / span, (cot - c0) / span, ages, gs.parser.bad)
 
 if __name__ == "__main__":
     sys.exit(main())
