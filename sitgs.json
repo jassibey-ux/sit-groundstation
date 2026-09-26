@@ -82,7 +82,7 @@
       "password": ""
     },
     "pairs": {
-      "127.0.0.1:5253": "157"
+      "127.0.0.1:5253": "17157"
     },
     "video_in_cot": true,
     "cot_unpaired": true,

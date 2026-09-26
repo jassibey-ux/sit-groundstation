@@ -93,7 +93,7 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 
     <!-- Barometric alt -->
     <div class="tab active two" id="tab-baro">
-      <div style="overflow:auto"><table class="grid" id="grid"><thead><tr><th>ID</th><th>RSSI</th><th></th><th>Pressure</th><th>T</th><th>GPS Alt</th><th>Baro Alt</th><th>Age</th><th>Battery</th><th>Fix</th><th>Sats</th></tr></thead><tbody></tbody></table></div>
+      <div style="overflow:auto"><table class="grid" id="grid"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>RSSI</th><th></th><th>Pressure</th><th>T</th><th>GPS Alt</th><th>Baro Alt</th><th>Age</th><th>Battery</th><th>Fix</th><th>Sats</th></tr></thead><tbody></tbody></table></div>
       <div class="side">
         <div class="box"><h4>Weather conditions</h4>
           <div class="field"><span>Pressure (bars)</span><input type="number" step="0.00001" id="b_ref_pressure_bar">
@@ -214,7 +214,7 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
       <div id="map"></div>
       <div class="side">
         <div class="box"><h4>Trackers</h4>
-          <table class="grid" id="names"><thead><tr><th>ID</th><th>UID</th><th>Callsign</th><th>CoT type (opt)</th><th>Msgs</th></tr></thead><tbody></tbody></table>
+          <table class="grid" id="names"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>UID</th><th>Callsign</th><th>CoT type (opt)</th><th>Msgs</th></tr></thead><tbody></tbody></table>
           <div class="small" style="margin-top:4px">Callsign shows on the TAK icon; leave CoT type blank to use the global type.</div></div>
         <div class="box"><label><input type="checkbox" id="satmap"> Satellite basemap</label> <button id="btnFit">Fit to trackers</button></div>
       </div>
@@ -236,7 +236,11 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 <script>
 const $=id=>document.getElementById(id);
 let cfg=null, cotTypes=[], state=null, dirty={}, saveTimer=null;
-const api=(p,b)=>fetch(p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{}).then(r=>r.json());
+const api=(p,b,ms)=>{const ac=new AbortController(),to=setTimeout(()=>ac.abort(),ms||60000);
+ return fetch(p,Object.assign({signal:ac.signal},b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{})).then(r=>r.json()).finally(()=>clearTimeout(to))};
+// full tracker id 17005 = band 17 (917 MHz), slot 005
+function idInfo(id){id=+id;return id>=1000?{mhz:900+Math.floor(id/1000),slot:id%1000}:{mhz:null,slot:id}}
+function idLabel(id){const i=idInfo(id);return i.mhz?`${id} · ${i.mhz} MHz · slot ${i.slot}`:String(id)}
 
 // ---------- tabs
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('tab-'+b.dataset.tab).classList.add('active');if(b.dataset.tab=='overview'&&map)setTimeout(()=>map.invalidateSize(),50);if(b.dataset.tab=='mission')setTimeout(()=>{if(mmap){mmap.invalidateSize();if(!mFitted&&state){const t=state.trackers.find(x=>x.lat!=null);if(t){mmap.setView([t.lat,t.lon],16);mFitted=true}}}},60);if(b.dataset.tab=='video')buildWall();});
@@ -286,7 +290,7 @@ $('btnAddDest').onclick=()=>{cfg.cot.destinations.push({enabled:true,host:'127.0
 function renderNames(){const ids=new Set([...(state?state.trackers.map(t=>String(t.id)):[]),...Object.keys(cfg.trackers)]);const tb=$('names').querySelector('tbody');
  const cur={};tb.querySelectorAll('tr').forEach(r=>cur[r.dataset.id]=r);
  tb.innerHTML='';[...ids].sort((a,b)=>a-b).forEach(id=>{const t=cfg.trackers[id]||{};const st=state&&state.trackers.find(x=>String(x.id)==id);
-  const tr=document.createElement('tr');tr.dataset.id=id;tr.innerHTML=`<td>${id}</td><td class="mono">${uidOf(+id)}</td><td><input type="text" class="cs" value="${t.callsign||''}" style="width:130px"></td><td><input type="text" class="ct" value="${t.cot_type||''}" style="width:110px"></td><td>${st?st.msg_count:''}</td>`;tb.appendChild(tr);
+  const tr=document.createElement('tr');tr.dataset.id=id;const ii=idInfo(id);tr.innerHTML=`<td><b>${id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td class="mono">${uidOf(+id)}</td><td><input type="text" class="cs" value="${t.callsign||''}" style="width:130px"></td><td><input type="text" class="ct" value="${t.cot_type||''}" style="width:110px"></td><td>${st?st.msg_count:''}</td>`;tb.appendChild(tr);
   tr.querySelectorAll('input').forEach(el=>el.onchange=()=>{cfg.trackers[id]=cfg.trackers[id]||{};cfg.trackers[id].callsign=tr.querySelector('.cs').value;cfg.trackers[id].cot_type=tr.querySelector('.ct').value;if(!cfg.trackers[id].callsign&&!cfg.trackers[id].cot_type)delete cfg.trackers[id];api('/api/config',{trackers:cfg.trackers})});});}
 function uidOf(id){try{const m=cfg.cot.uid_format.match(/%0?(\d*)d/);const w=m&&m[1]?+m[1]:0;return cfg.cot.uid_prefix+String(id).padStart(w,'0')}catch(e){return cfg.cot.uid_prefix+id}}
 
@@ -309,7 +313,7 @@ $('btnFit').onclick=()=>{if(!hasMap)return;const ll=Object.values(markers).map(m
 
 // ---------- plots
 const COLORS=['#0e7c86','#c0392b','#2b6cb0','#c98a12','#6b3fa0','#2b9a48','#d35400','#7f8c8d','#16a085','#8e44ad'];
-function colorFor(id){const s=String(id);let h=0;if(/^\d+$/.test(s))h=+s;else for(const ch of s)h=(h*31+ch.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
+function colorFor(id){const s=String(id);let h=0;if(/^\d+$/.test(s)){const i=+s;h=(i%1000)*7+Math.floor(i/1000)*3}else for(const ch of s)h=(h*31+ch.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
 function sizeCanvas(c){const r=c.getBoundingClientRect();if(c.width!=Math.floor(r.width*devicePixelRatio)){c.width=Math.floor(r.width*devicePixelRatio);c.height=Math.floor(c.getAttribute('height')*devicePixelRatio)}return c.getContext('2d')}
 function drawTimeline(s){const c=$('cvTimeline'),g=sizeCanvas(c),W=c.width,H=c.height,ids=Object.keys(s.timeline).sort((a,b)=>a-b),win=s.timeline_window_s;g.clearRect(0,0,W,H);
  const lab=60*devicePixelRatio,rowH=Math.max(8,(H-14*devicePixelRatio)/Math.max(1,ids.length));g.font=`${9*devicePixelRatio}px Menlo,monospace`;
@@ -323,13 +327,15 @@ function drawSlots(s){const c=$('cvSlots'),g=sizeCanvas(c),W=c.width,H=c.height,
 // ---------- state poll
 function f(v,d){return v==null?'':(typeof v=='number'?v.toFixed(d):v)}
 function rssiPct(r){return r==null?0:Math.max(0,Math.min(100,(r+120)/70*100))}
-async function tick(){try{const s=await api('/api/state');state=s;
+let ticking=false;
+function tipFor(t){const custom=t.callsign&&t.callsign!=uidOf(t.id);return (custom?t.callsign+' (':'')+idLabel(t.id)+(custom?')':'')}
+async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api/state',null,5000);state=s;
  $('up').textContent=Math.round(s.uptime_s);$('lines').textContent=s.lines;$('reports').textContent=s.reports;$('bad').textContent=s.bad_sentences;$('ghosts').textContent=s.ghosts;$('bytes').textContent=s.bytes;
  $('connStatus').textContent=s.conn_status;$('ledConn').className='led '+(s.connected?'on':(s.conn_status.startsWith('error')||s.conn_status.startsWith('no ')?'warn':'off'));
  $('btnConnect').textContent=s.connected?'Disconnect':'Connect';$('btnConnect').classList.toggle('on',s.connected);
  const ra=$('raw');const atBottom=ra.scrollHeight-ra.scrollTop-ra.clientHeight<30;ra.value=s.raw.join('\n');if(atBottom)ra.scrollTop=ra.scrollHeight;
  const tol=s.data_age_tolerance_s;
- $('grid').querySelector('tbody').innerHTML=s.trackers.map(t=>{const cls=t.age_s==null?'dead':(t.age_s>tol?'stale':'');return `<tr class="${cls}"><td><b>${t.id}</b></td><td class="mono">${f(t.rssi,0)}</td><td><span class="bar"><i style="width:${rssiPct(t.rssi)}%"></i></span></td><td>${t.pressure_pa==null?'':(t.pressure_pa/1e5).toFixed(5)}</td><td>${f(t.temp_c,0)}</td><td>${f(t.gps_alt,1)}</td><td>${f(t.baro_alt,1)}</td><td>${f(t.age_s,1)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)+' V'}</td><td><span class="led ${t.fix_valid?'on':'off'}"></span></td><td>${t.nsat??''}</td></tr>`}).join('');
+ $('grid').querySelector('tbody').innerHTML=s.trackers.map(t=>{const cls=t.age_s==null?'dead':(t.age_s>tol?'stale':'');const ii=idInfo(t.id);return `<tr class="${cls}"><td><b>${t.id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td class="mono">${f(t.rssi,0)}</td><td><span class="bar"><i style="width:${rssiPct(t.rssi)}%"></i></span></td><td>${t.pressure_pa==null?'':(t.pressure_pa/1e5).toFixed(5)}</td><td>${f(t.temp_c,0)}</td><td>${f(t.gps_alt,1)}</td><td>${f(t.baro_alt,1)}</td><td>${f(t.age_s,1)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)+' V'}</td><td><span class="led ${t.fix_valid?'on':'off'}"></span></td><td>${t.nsat??''}</td></tr>`}).join('');
  $('sealevel').textContent=s.sea_level_bar;const g=s.trackers.find(t=>t.geoid_sep!=null);$('geoid_gps').value=g?(-g.geoid_sep).toFixed(1):'';
  $('cotsent').textContent=s.cot_sent;$('coterr').textContent=s.cot_errors;$('cotstatus').textContent=s.cot_status.join('\n');
  $('nmeafile').textContent=s.nmea_path||'(not logging)';$('nmealines').textContent=s.nmea_lines;$('ledNmea').className='led '+(s.nmea_path?'on':'off');
@@ -337,21 +343,21 @@ async function tick(){try{const s=await api('/api/state');state=s;
  $('dbgstats').textContent=`sentences ok/bad: ${s.lines}/${s.bad_sentences}   reports: ${s.reports}   rejected (noise/wrong dest): ${s.ghosts}   bytes: ${s.bytes}   cot sent: ${s.cot_sent}`;
  const dl=$('dbglog');const db=dl.scrollHeight-dl.scrollTop-dl.clientHeight<30;dl.textContent=s.debug.join('\n');if(db)dl.scrollTop=dl.scrollHeight;
  if(hasMap)for(const t of s.trackers){if(t.lat==null)continue;const ll=[t.lat,t.lon],col=colorFor(t.id);
-  if(!markers[t.id]){markers[t.id]=L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9}).addTo(map).bindTooltip(String(t.callsign||t.id),{permanent:true,direction:'right'});trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map)}
-  else{markers[t.id].setLatLng(ll);trails[t.id].setLatLngs(s.trails[t.id]||[]);markers[t.id].setTooltipContent(String(t.callsign||t.id))}
+  if(!markers[t.id]){markers[t.id]=L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9}).addTo(map).bindTooltip(tipFor(t),{permanent:true,direction:'right'});trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map)}
+  else{markers[t.id].setLatLng(ll);trails[t.id].setLatLngs(s.trails[t.id]||[]);markers[t.id].setTooltipContent(tipFor(t))}
   markers[t.id].setStyle({opacity:t.age_s>tol?.4:1,fillOpacity:t.age_s>tol?.3:.9});if(!fitted){map.setView(ll,15);fitted=true}}
  renderDrones(s);
  if(cfg){drawTimeline(s);drawSlots(s);if($('tab-overview').classList.contains('active'))renderNamesIfChanged(s)}
-}catch(e){$('connStatus').textContent='no connection to sitgs backend';$('ledConn').className='led warn'}}
+}catch(e){$('connStatus').textContent='no connection to sitgs backend';$('ledConn').className='led warn'}finally{ticking=false}}
 const dmarkers={},dtrails={},dlinks={};
 function renderDrones(s){const c=s.cosmo||{boxes:[]};$('nboxes').textContent=c.boxes.filter(b=>b.online).length;$('dcot').textContent=c.drone_cot_sent||0;$('dcot2').textContent=c.drone_cot_sent||0;
  $('co_status').textContent=`packets ${c.packets||0}`+(c.mqtt?`  · mqtt: ${c.mqtt}`:'');
  const tids=[...new Set([...(s.trackers.map(t=>t.id)),...Object.values(c.pairs||{}).filter(Boolean).map(Number)])].sort((a,b)=>a-b);
  const tb=$('dgrid').querySelector('tbody');const focused=document.activeElement&&tb.contains(document.activeElement);
- if(!focused){tb.innerHTML=c.boxes.map(b=>{const opts='<option value="">— none —</option>'+tids.map(t=>`<option value="${t}" ${String(b.tracker_id)==String(t)?'selected':''}>${t}</option>`).join('');
+ if(!focused){tb.innerHTML=c.boxes.map(b=>{const opts='<option value="">— none —</option>'+tids.map(t=>`<option value="${t}" ${String(b.tracker_id)==String(t)?'selected':''}>${idLabel(t)}</option>`).join('');
   const srcCls=b.source=='DJI'?'ok':(b.source=='LoRa'?'stale':'');const cls=b.online?'':'dead';
   return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td>${b.license==null?'':(b.license?'✓':'✗')}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
-  tb.querySelectorAll('select.pair').forEach(el=>el.onchange=()=>{const key=el.closest('tr').dataset.key;cfg.cosmo.pairs=cfg.cosmo.pairs||{};if(el.value)cfg.cosmo.pairs[key]=Number(el.value);else delete cfg.cosmo.pairs[key];api('/api/config',{cosmo:{pairs:cfg.cosmo.pairs}})});}
+  tb.querySelectorAll('select.pair').forEach(el=>el.onchange=()=>{const key=el.closest('tr').dataset.key;cfg.cosmo.pairs=cfg.cosmo.pairs||{};if(el.value)cfg.cosmo.pairs[key]=String(el.value);else delete cfg.cosmo.pairs[key];api('/api/config',{cosmo:{pairs:cfg.cosmo.pairs}})});}
  const mb=$('m_box');if(!(document.activeElement===mb)){const cur=mb.value;mb.innerHTML=c.boxes.filter(b=>b.transport=='udp').map(b=>`<option value="${b.key}">${b.name||b.key} (${b.host})</option>`).join('');if(cur)mb.value=cur}
  $('draw').textContent=c.boxes.map(b=>`${b.name||b.key}: connected=${b.connected} fix=${b.fix} lat=${b.lat} lng=${b.lng} alt=${b.alt_rel} sats=${b.sats} yaw=${b.yaw} hspeed=${b.hspeed} batt=${b.battery} mode=${b.flight_mode} in_flight=${b.in_flight} rth=${b.rth} model=${b.model} sn=${b.sn} takeoff_msl=${b.takeoff_msl}`).join('\n');
  if(!hasMap)return;

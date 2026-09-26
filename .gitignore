@@ -8,6 +8,7 @@ logs/csv/
 logs/kml/
 logs/puck/
 logs/missions/
+logs/sitgs-events.log
 mediamtx.yml
 
 # build output

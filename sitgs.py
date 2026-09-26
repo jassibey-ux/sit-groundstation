@@ -9,7 +9,7 @@ Web reimplementation of the LabVIEW "LoRa GPS RX and Logger" client, tab for tab
 
 Dependency: pyserial (a copy in ./serial works too)
 """
-import argparse, collections, csv, datetime as dt, json, math, os, socket, struct, sys, threading, time
+import argparse, collections, csv, datetime as dt, json, math, os, queue, socket, struct, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,11 +103,15 @@ def is_multicast(host):
 # ------------------------------------------------------------------------- state
 class Track:
     def __init__(self, tid):
+        # tid is the full over-the-air id: 17005 = band 17 (917 MHz), slot 005
         self.id = tid; self.callsign = None
+        self.id_slot = tid % 1000
+        self.freq_code = str(tid // 1000) if tid >= 1000 else None
+        self.carrier_mhz = 900 + tid // 1000 if tid >= 1000 else None
         self.fix_valid = 0; self.lat = self.lon = None; self.gps_alt = None; self.hdop = None; self.nsat = None
         self.sog = None; self.cog = None; self.geoid_sep = None
         self.pressure_pa = None; self.temp_c = None; self.baro_alt_std = None; self.baro_alt = None
-        self.rssi = None; self.batt_mv = None; self.freq_code = None
+        self.rssi = None; self.batt_mv = None
         self.gps_time = None; self.rx_time = None; self.msg_count = 0; self.last_cot = 0.0
         self.trail = collections.deque(maxlen=2000)      # (t, lat, lon, alt)
         self.rx_hist = collections.deque(maxlen=600)     # (t, slot, rssi)
@@ -137,7 +141,7 @@ class ReceiverParser:
         if tag == "RFMSGFROM":
             self.cur = {"raw": [line]}
             try:
-                code = f[1]; self.cur["freq_code"] = code[:-3] if len(code) > 3 else None; self.cur["addr"] = int(code[-3:])
+                self.cur["addr"] = int(f[1])
                 self.cur["len_hex"] = f[2] if len(f) > 2 else None
                 self.cur["dest"] = int(f[3]) if len(f) > 3 and f[3].isdigit() else None
             except (IndexError, ValueError): self.cur = None
@@ -217,6 +221,8 @@ class CotSender:
             if not d.get("enabled", True): continue
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # sends run on the serial reader thread: drop a packet rather than ever block ingest
+                s.setblocking(False)
                 if is_multicast(d["host"]):
                     s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("b", int(d.get("ttl", 2))))
                     iface = d.get("iface", "0.0.0.0")
@@ -249,9 +255,10 @@ class GroundStation:
         self.tracks = {}; self.lock = threading.Lock()
         self.parser = ReceiverParser(self.on_report, self.on_raw)
         self.raw = collections.deque(maxlen=300); self.cot_status = collections.deque(maxlen=50)
-        self.debug = collections.deque(maxlen=200)
+        self.debug = collections.deque(maxlen=200); self.events = queue.Queue(maxsize=10000)
         self.start = time.time(); self.lines = 0; self.bytes = 0
         self.conn_status = "disconnected"; self.connected = False; self.conn_thread = None; self.conn_stop = threading.Event()
+        self.conn_gen = 0; self.ser = None; self.last_loop = 0.0; self.stall_cancel_at = None; self.reopen_gen = None
         self.nmea_fh = None; self.nmea_path = None; self.nmea_lines = 0
         self.csv_fhs = {}; self.csv_rows = 0; self.session_stamp = None
         self.cot = None; self.rebuild_cot()
@@ -261,12 +268,17 @@ class GroundStation:
         self.cosmo = CosmoClient(lambda: self.cfg["cosmo"], self.dbg); self.cosmo.start()
         self.missions = mission_mod.MissionStore(os.path.join(DATA_DIR, "logs", "missions"))
         self.drone_cot_sent = 0
-        threading.Thread(target=self.kml_loop, daemon=True).start()
-        threading.Thread(target=self.fusion_loop, daemon=True).start()
+        self.kml_thread = threading.Thread(target=self.kml_loop, daemon=True); self.kml_thread.start()
+        self.fusion_thread = threading.Thread(target=self.fusion_loop, daemon=True); self.fusion_thread.start()
+        self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True); self.monitor_thread.start()
 
     # ---- status helpers
     def cot_log(self, msg): self.cot_status.append("%s  %s" % (dt.datetime.now().strftime("%H:%M:%S"), msg))
-    def dbg(self, msg): self.debug.append("%s  %s" % (dt.datetime.now().strftime("%H:%M:%S.%f")[:-3], msg))
+    def dbg(self, msg):
+        line = "%s  %s" % (dt.datetime.now().strftime("%H:%M:%S.%f")[:-3], msg)
+        self.debug.append(line)
+        try: self.events.put_nowait(line)   # written to disk by monitor_loop; callers may hold self.lock
+        except queue.Full: pass
 
     # ---- config
     def save_config(self):
@@ -278,7 +290,8 @@ class GroundStation:
             deep_update(self.cfg, patch)
             if "trackers" in patch: self.cfg["trackers"] = patch["trackers"]
             if "destinations" in patch.get("cot", {}): self.cfg["cot"]["destinations"] = patch["cot"]["destinations"]
-            if "pairs" in patch.get("cosmo", {}): self.cfg["cosmo"]["pairs"] = patch["cosmo"]["pairs"]
+            if "pairs" in patch.get("cosmo", {}):
+                self.cfg["cosmo"]["pairs"] = {k: str(v) for k, v in patch["cosmo"]["pairs"].items() if v not in (None, "", 0)}
             if "manual_hosts" in patch.get("cosmo", {}): self.cfg["cosmo"]["manual_hosts"] = patch["cosmo"]["manual_hosts"]
             for tr in self.tracks.values(): tr.callsign = self.cfg["trackers"].get(str(tr.id), {}).get("callsign") or self.uid(tr.id)
             self.save_config()
@@ -288,6 +301,24 @@ class GroundStation:
     def uid(self, tid):
         try: return self.cfg["cot"]["uid_prefix"] + (self.cfg["cot"]["uid_format"] % tid)
         except (TypeError, ValueError): return "%s%d" % (self.cfg["cot"]["uid_prefix"], tid)
+
+    def migrate_short_refs(self, tr):
+        """Settings saved before v0.1.1 refer to trackers by slot only (157); move them onto the
+        full id (17157) the first time that tracker is heard. Caller holds self.lock."""
+        short, full = str(tr.id_slot), str(tr.id)
+        if short == full: return
+        moved = []
+        trackers = self.cfg["trackers"]
+        if short in trackers and full not in trackers:
+            trackers[full] = trackers.pop(short); moved.append("callsign/CoT type")
+        pairs = self.cfg["cosmo"].setdefault("pairs", {})
+        for key, v in list(pairs.items()):
+            if str(v) == short: pairs[key] = full; moved.append("pairing with %s" % key)
+        b = self.cfg["barometer"]
+        if str(b.get("ref_tracker_id") or "") == short: b["ref_tracker_id"] = tr.id; moved.append("baro reference")
+        if moved:
+            self.dbg("settings for old id %s moved to %s: %s" % (short, full, ", ".join(moved)))
+            self.save_config()
 
     def rebuild_cot(self):
         if self.cot: self.cot.close()
@@ -327,9 +358,10 @@ class GroundStation:
         with self.lock:
             tr = self.tracks.get(tid)
             if tr is None:
-                tr = self.tracks[tid] = Track(tid); tr.callsign = self.cfg["trackers"].get(str(tid), {}).get("callsign") or self.uid(tid)
-                self.dbg("new tracker id=%d freq_code=%s" % (tid, r.get("freq_code")))
-            tr.msg_count += 1; tr.rx_time = now; tr.freq_code = r.get("freq_code")
+                tr = self.tracks[tid] = Track(tid); self.migrate_short_refs(tr)
+                tr.callsign = self.cfg["trackers"].get(str(tid), {}).get("callsign") or self.uid(tid)
+                self.dbg("new tracker id=%d (%s MHz, slot %d)" % (tid, tr.carrier_mhz or "?", tr.id_slot))
+            tr.msg_count += 1; tr.rx_time = now
             for ks, kd in (("rssi", "rssi"), ("batt_mv", "batt_mv"), ("pressure_pa", "pressure_pa"), ("temp_c", "temp_c"),
                            ("baro_alt_std", "baro_alt_std"), ("hdop", "hdop"), ("nsat", "nsat"), ("alt", "gps_alt"),
                            ("geoid", "geoid_sep"), ("sog_ms", "sog"), ("cog", "cog")):
@@ -428,10 +460,12 @@ class GroundStation:
     # ---- KML / GeoJSON
     def kml_loop(self):
         while True:
+            interval = 2.0
             try:
+                interval = max(0.5, float(self.cfg["kml"]["interval_s"]))
                 if self.cfg["kml"]["enabled"]: self.write_kml()
             except Exception as e: self.dbg("KML error: %s" % e)
-            time.sleep(max(0.5, float(self.cfg["kml"]["interval_s"])))
+            time.sleep(interval)
 
     def build_kml(self):
         tol = float(self.cfg["data_age_tolerance_s"]); n = int(self.cfg["kml"]["trail_points"]); out = []
@@ -466,46 +500,116 @@ class GroundStation:
             with open(tmp, "w") as f: f.write(data)
             os.replace(tmp, p)
 
+    # ---- watchdog, heartbeat, events log
+    def monitor_loop(self):
+        """Writes the event log to disk, runs the serial watchdog and logs a heartbeat every minute,
+        so a freeze in the field leaves evidence of which part stopped."""
+        path = os.path.join(DATA_DIR, "logs", "sitgs-events.log"); fh = None; last_hb = 0.0
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True); fh = open(path, "a", buffering=1, encoding="utf-8")
+            fh.write("\n%s  ==== sitgs started, data folder %s\n" % (dt.datetime.now().isoformat(timespec="seconds"), DATA_DIR))
+        except OSError as e:
+            self.debug.append("events log unavailable: %s" % e)
+        while True:
+            try:
+                self.check_serial()
+                if time.time() - last_hb >= 60:
+                    last_hb = time.time(); self.dbg(self.heartbeat())
+                day = dt.date.today().isoformat()
+                while True:
+                    try: line = self.events.get_nowait()
+                    except queue.Empty: break
+                    if fh: fh.write("%s %s\n" % (day, line))
+            except Exception as e:
+                self.debug.append("monitor error: %s" % e)
+            time.sleep(1)
+
+    def heartbeat(self):
+        def up(t): return "-" if t is None else ("up" if t.is_alive() else "DOWN")
+        loop_age = "%.0fs" % (time.time() - self.last_loop) if self.ser is not None else "-"
+        return ("heartbeat uptime=%ds lines=%d reports=%d trackers=%d conn='%s' serial_loop_age=%s cot_sent=%d cot_err=%d "
+                "threads conn=%s kml=%s fusion=%s cosmo_rx=%s cosmo_tx=%s") % (
+            time.time() - self.start, self.lines, self.reports, len(self.tracks), self.conn_status, loop_age, self.cot.sent, self.cot.errors,
+            up(self.conn_thread), up(self.kml_thread), up(self.fusion_thread),
+            up(getattr(self.cosmo, "rx_thread", None)), up(getattr(self.cosmo, "tx_thread", None)))
+
+    def check_serial(self):
+        """A Windows serial read can hang forever inside the driver (serialwin32 waits on
+        GetOverlappedResult with no timeout): the read loop stops while the status still says
+        connected. Cancel the pending read; if the thread stays stuck, abandon it and reconnect."""
+        ser = self.ser
+        if ser is None or not self.connected: self.stall_cancel_at = None; return
+        stalled = time.time() - self.last_loop
+        if stalled < 10: self.stall_cancel_at = None; return
+        if self.stall_cancel_at is None:
+            self.stall_cancel_at = time.time()
+            self.dbg("WATCHDOG: serial read loop stalled %.0f s - cancelling the pending read" % stalled)
+            # a cancelled win32 read returns b"" rather than raising; make the loop reopen the port
+            self.reopen_gen = self.conn_gen
+            try: (getattr(ser, "cancel_read", None) or ser.close)()
+            except Exception as e: self.dbg("WATCHDOG: cancel failed: %s" % e)
+        elif time.time() - self.stall_cancel_at > 3:
+            self.dbg("WATCHDOG: serial thread still stuck - abandoning it and reconnecting")
+            self.stall_cancel_at = None; self.start_conn_thread()
+
     # ---- connection
     def connect(self):
         self.disconnect()
-        c = self.cfg["connection"]; self.conn_stop.clear()
-        self.conn_thread = threading.Thread(target=self.conn_loop, args=(dict(c),), daemon=True); self.conn_thread.start()
+        self.start_conn_thread()
+
+    def start_conn_thread(self):
+        # a thread from an older generation exits on its own if it ever wakes up
+        self.conn_gen += 1; self.ser = None; self.connected = False; self.conn_stop.clear()
+        self.conn_thread = threading.Thread(target=self.conn_loop, args=(dict(self.cfg["connection"]), self.conn_gen), daemon=True)
+        self.conn_thread.start()
 
     def disconnect(self):
         self.conn_stop.set()
         if self.conn_thread and self.conn_thread.is_alive(): self.conn_thread.join(timeout=3)
-        self.conn_thread = None; self.connected = False
+        self.conn_gen += 1   # a thread that did not stop in time must not resume after conn_stop is cleared
+        self.conn_thread = None; self.connected = False; self.ser = None
         if self.conn_status != "disconnected": self.conn_status = "disconnected"
 
-    def conn_loop(self, c):
+    def conn_loop(self, c, gen):
         if serial is None:
             self.conn_status = "pyserial not available"; return
-        if c["type"] == "network": port = "socket://%s:%s" % (c["host"], c["tcp_port"])
-        else:
-            port = c["port"]
-            if port == "auto":
-                port = find_port()
-                if not port: self.conn_status = "no serial port found"; return
+        def current(): return gen == self.conn_gen and not self.conn_stop.is_set()
         rec = open(os.path.join(DATA_DIR, c["record_raw"]), "ab") if c.get("record_raw") else None
-        while not self.conn_stop.is_set():
-            try:
-                self.conn_status = "opening %s" % port
-                with serial.serial_for_url(port, baudrate=int(c["baud"]), timeout=0.5) as ser:
-                    self.conn_status = "connected %s" % port; self.connected = True; self.dbg("connected %s" % port); buf = b""
-                    while not self.conn_stop.is_set():
-                        chunk = ser.read(getattr(ser, "in_waiting", 0) or 1)
-                        if not chunk: continue
-                        self.bytes += len(chunk)
-                        if rec: rec.write(chunk); rec.flush()
-                        buf += chunk
-                        while b"\n" in buf:
-                            line, buf = buf.split(b"\n", 1); self.parser.feed_line(line.decode("ascii", "replace"))
-            except Exception as e:
-                self.connected = False; self.conn_status = "error: %s (retrying)" % str(e)[:80]; self.dbg("connection error: %s" % e)
-                self.conn_stop.wait(2)
-        self.connected = False; self.conn_status = "disconnected"
-        if rec: rec.close()
+        try:
+            while current():
+                if c["type"] == "network": port = "socket://%s:%s" % (c["host"], c["tcp_port"])
+                else:
+                    port = c["port"]
+                    if port == "auto":
+                        # re-resolved on every retry: Windows may give a replugged receiver a new COM number
+                        port = find_port()
+                        if not port:
+                            self.conn_status = "no serial port found (retrying)"; self.conn_stop.wait(5); continue
+                try:
+                    self.conn_status = "opening %s" % port
+                    with serial.serial_for_url(port, baudrate=int(c["baud"]), timeout=0.5) as ser:
+                        self.last_loop = time.time(); self.ser = ser
+                        self.conn_status = "connected %s" % port; self.connected = True; self.dbg("connected %s" % port); buf = b""
+                        while current():
+                            self.last_loop = time.time()   # watched by check_serial
+                            chunk = ser.read(getattr(ser, "in_waiting", 0) or 1)
+                            if self.reopen_gen == gen:
+                                self.reopen_gen = None; raise serial.SerialException("watchdog cancelled a stuck read; reopening port")
+                            if not chunk: continue
+                            self.bytes += len(chunk)
+                            if rec: rec.write(chunk); rec.flush()
+                            buf += chunk
+                            while b"\n" in buf:
+                                line, buf = buf.split(b"\n", 1); self.parser.feed_line(line.decode("ascii", "replace"))
+                except Exception as e:
+                    if not current(): break
+                    self.ser = None; self.connected = False
+                    self.conn_status = "error: %s (retrying)" % str(e)[:80]; self.dbg("connection error: %s" % e)
+                    self.conn_stop.wait(2)
+        finally:
+            if rec: rec.close()
+            if gen == self.conn_gen:
+                self.ser = None; self.connected = False; self.conn_status = "disconnected"
 
     def replay_file(self, path, speed):
         def run():
@@ -524,20 +628,24 @@ class GroundStation:
         with self.lock:
             tol = float(self.cfg["data_age_tolerance_s"]); cutoff = time.time() - 120
             timeline = {str(t.id): [[round(x - cutoff, 2), s, r] for x, s, r in t.rx_hist if x >= cutoff] for t in self.tracks.values()}
-            for b in self.cosmo.boxes.values():
-                pts = [[round(x - cutoff, 2), None, None] for x, _, _ in b.rx_hist if x >= cutoff]
-                if pts or b.online: timeline["DJI " + (b.name or b.key)] = pts
+            # box state is mutated by the cosmo rx thread under cosmo.lock (never taken before self.lock)
+            with self.cosmo.lock:
+                box_trails = {}
+                for b in list(self.cosmo.boxes.values()):
+                    pts = [[round(x - cutoff, 2), None, None] for x, _, _ in b.rx_hist if x >= cutoff]
+                    if pts or b.online: timeline["DJI " + (b.name or b.key)] = pts
+                    box_trails[b.key] = [[la, lo] for _, la, lo, _ in list(b.trail)[-500:]]
             cs = self.cosmo.snapshot(); pairs = self.cfg["cosmo"].get("pairs", {})
             for bd in cs["boxes"]:
                 box = self.cosmo.boxes.get(bd["key"]); bd["tracker_id"] = pairs.get(bd["key"]) or None
                 bd["source"] = "DJI" if self.dji_live(box) else ("LoRa" if bd["tracker_id"] else "-")
-                bd["trail"] = [[la, lo] for _, la, lo, _ in list(box.trail)[-500:]] if box else []
+                bd["trail"] = box_trails.get(bd["key"], [])
             cs["pairs"] = pairs; cs["drone_cot_sent"] = self.drone_cot_sent
             return {"uptime_s": round(time.time() - self.start, 1), "conn_status": self.conn_status, "connected": self.connected,
                     "lines": self.lines, "bytes": self.bytes, "reports": self.reports, "bad_sentences": self.parser.bad, "ghosts": self.ghosts,
                     "cot_sent": self.cot.sent, "cot_errors": self.cot.errors, "cot_status": list(self.cot_status),
                     "nmea_path": self.nmea_path if self.nmea_fh else None, "nmea_lines": self.nmea_lines, "csv_rows": self.csv_rows,
-                    "csv_files": {str(k): os.path.basename(f.name) for k, (f, _) in self.csv_fhs.items()},
+                    "csv_files": {str(k): os.path.basename(f.name) for k, (f, _) in self.csv_fhs.copy().items()},
                     "sea_level_bar": round(self.sea_level_pa / 1e5, 5), "data_age_tolerance_s": tol,
                     "raw": list(self.raw)[-120:], "debug": list(self.debug)[-100:], "timeline_window_s": 120, "timeline": timeline,
                     "cosmo": cs,
@@ -570,6 +678,23 @@ def find_port(probe=True):
             continue
     return cands[0][1]
 
+def disable_quickedit():
+    """A click in a Windows console window enters selection mode, and every write to the console
+    then blocks until Enter/Esc — the program looks frozen. Turn that mode off for our console."""
+    if os.name != "nt": return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32")   # private instance: typed prototypes don't leak into other users
+        k32.GetStdHandle.restype = wintypes.HANDLE; k32.GetStdHandle.argtypes = [wintypes.DWORD]
+        k32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        h = k32.GetStdHandle(wintypes.DWORD(-10).value); mode = wintypes.DWORD()
+        if k32.GetConsoleMode(h, ctypes.byref(mode)):
+            k32.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080)   # clear QUICK_EDIT, set EXTENDED_FLAGS
+    except Exception:
+        pass
+
 def list_ports():
     if serial is None: return []
     return [{"device": p.device, "description": p.description or "", "vid": p.vid, "pid": p.pid} for p in serial.tools.list_ports.comports()]
@@ -580,9 +705,18 @@ def make_handler(gs, page):
         def log_message(self, *a): pass
         def _send(self, code, ctype, body):
             if isinstance(body, str): body = body.encode()
-            self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            try:
+                self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass   # browser went away mid-response
         def do_GET(self):
+            # unhandled errors would print tracebacks to the console, which blocks under Windows QuickEdit
+            try: self._get()
+            except Exception as e:
+                gs.dbg("GET %s failed: %s" % (self.path, e))
+                self._send(500, "application/json", json.dumps({"ok": False, "error": str(e)}))
+        def _get(self):
             p = self.path.split("?")[0]
             if p == "/api/state": self._send(200, "application/json", json.dumps(gs.snapshot()))
             elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "here": DATA_DIR}))
@@ -609,8 +743,9 @@ def make_handler(gs, page):
                 else: self._send(404, "text/plain", "not found")
             else: self._send(200, "text/html; charset=utf-8", page)
         def do_POST(self):
-            n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n) or b"{}"); p = self.path
+            p = self.path
             try:
+                n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n) or b"{}")
                 if p == "/api/config": gs.update_config(body); self._send(200, "application/json", json.dumps({"ok": True, "config": gs.cfg}))
                 elif p == "/api/connect":
                     if body: gs.update_config({"connection": body})
@@ -649,6 +784,7 @@ def main():
     ap.add_argument("--record", help="append raw serial bytes to this file"); ap.add_argument("--replay"); ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--web-port", type=int); ap.add_argument("--no-connect", action="store_true")
     args = ap.parse_args()
+    disable_quickedit()
     if args.list_ports:
         for p in list_ports(): print("%-30s vid=%s pid=%s  %s" % (p["device"], hex(p["vid"]) if p["vid"] else "-", hex(p["pid"]) if p["pid"] else "-", p["description"]))
         print("autodetect ->", find_port()); return 0
@@ -672,12 +808,17 @@ def main():
     if args.replay: gs.replay_file(args.replay, args.speed)
     elif cfg["connection"].get("auto_connect", True) and not args.no_connect: gs.connect()
     try:
-        last = None
+        last_status = None; last_print = 0.0
         while True:
-            time.sleep(1); s = gs.snapshot()
-            line = "%-42s lines=%d bad=%d cot=%d trackers=%s" % (s["conn_status"][:42], s["lines"], s["bad_sentences"], s["cot_sent"],
-                                                                " ".join("%d(%.0fs)" % (t["id"], t["age_s"] or 0) for t in s["trackers"]))
-            if line != last: print(line); last = line
+            time.sleep(1)
+            try:
+                # console output is kept rare: a blocked console write must never matter
+                if gs.conn_status != last_status or time.time() - last_print >= 30:
+                    s = gs.snapshot(); last_status = s["conn_status"]; last_print = time.time()
+                    print("%-42s lines=%d bad=%d cot=%d trackers=%s" % (s["conn_status"][:42], s["lines"], s["bad_sentences"], s["cot_sent"],
+                                                                        " ".join(str(t["id"]) for t in s["trackers"]) or "-"))
+            except Exception as e:
+                gs.dbg("status loop error: %s" % e)
     except KeyboardInterrupt: pass
     return 0
 

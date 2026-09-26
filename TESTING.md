@@ -51,6 +51,26 @@ Run with `--host` open: the server already listens on all interfaces; just
 browse to `http://<this machine's IP>:8090` from the other device. Allow the
 app through the OS firewall if prompted.
 
+## Tracker IDs
+
+Trackers are shown by their full over-the-air ID, e.g. **17005** = carrier
+917 MHz, slot 5; **18005** = 918 MHz, slot 5. The Barometric alt grid and the
+Overview table have Carrier and Slot columns; map labels read
+`17005 · 917 MHz · slot 5`. CoT uids are `TRK.17005` and split CSV files are
+`…_ID17005.csv`. Callsigns and drone pairings saved under an old short ID
+(e.g. "5") move to the full ID automatically the first time that tracker is
+heard.
+
+## If the app ever looks frozen
+
+1. Press **Enter** in the console window once.
+2. Open http://localhost:8090 in the browser: does the page still update?
+   Is the uptime counter moving while lines/reports are stuck?
+3. Send us `logs/sitgs-events.log` from the data folder. It has a heartbeat
+   line every minute showing which part stopped, plus any watchdog actions
+   (a stuck serial read is cancelled and reconnected automatically after
+   ~10 s).
+
 ## Known limitations of this test build
 
 - Unsigned binaries (SmartScreen/Gatekeeper warnings above are expected).

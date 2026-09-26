@@ -85,8 +85,8 @@ class CosmoClient:
     def start(self):
         if self.running: return
         self.running = True
-        threading.Thread(target=self.rx_loop, daemon=True).start()
-        threading.Thread(target=self.tx_loop, daemon=True).start()
+        self.rx_thread = threading.Thread(target=self.rx_loop, daemon=True); self.rx_thread.start()
+        self.tx_thread = threading.Thread(target=self.tx_loop, daemon=True); self.tx_thread.start()
 
     def stop(self):
         self.running = False
@@ -114,32 +114,39 @@ class CosmoClient:
     # --- threads
     def tx_loop(self):
         while self.running:
-            cfg = self.get_cfg()
-            if not cfg.get("enabled"):
-                time.sleep(1); continue
-            if self.sock is None:
-                try: self.sock = self._open()
-                except OSError as e: self.log("cosmo socket error: %s" % e); time.sleep(2); continue
-            targets = set()
-            if cfg.get("discovery", True): targets.add(("255.255.255.255", DEFAULT_PORT))
-            for h in cfg.get("manual_hosts", []):
-                h = h.strip()
-                if not h: continue
-                host, _, port = h.partition(":"); targets.add((host, int(port) if port else DEFAULT_PORT))
-            for host, port in targets: self._send(bytes([P_DISCOVERY]), host, port)
-            with self.lock:
-                for b in list(self.boxes.values()):
-                    if b.transport != "udp": continue
-                    if time.time() - b.last_seen > 4 and b.online:
-                        b.online = False; self.log("cosmo box offline: %s (%s)" % (b.name, b.key))
-                    if b.online: self._send(bytes([P_CLIENT_ALIVE, 1]), b.host, b.port)
-            # MQTT transport
-            m = cfg.get("mqtt", {})
-            if m.get("enabled") and self.mqtt is None:
-                self.mqtt = MqttSubscriber(m, self.on_mqtt, self.log); self.mqtt.start()
-            elif (not m.get("enabled")) and self.mqtt is not None:
-                self.mqtt.stop(); self.mqtt = None
+            try: self.tx_once()
+            except Exception as e: self.log("cosmo tx error: %s" % e)
             time.sleep(1)
+
+    def tx_once(self):
+        cfg = self.get_cfg()
+        if not cfg.get("enabled"): return
+        if self.sock is None:
+            try: self.sock = self._open()
+            except OSError as e: self.log("cosmo socket error: %s" % e); time.sleep(1); return
+        targets = set()
+        if cfg.get("discovery", True): targets.add(("255.255.255.255", DEFAULT_PORT))
+        for h in cfg.get("manual_hosts", []):
+            h = h.strip()
+            if not h: continue
+            host, _, port = h.partition(":")
+            try: targets.add((host, int(port) if port else DEFAULT_PORT))
+            except ValueError: continue
+        for host, port in targets: self._send(bytes([P_DISCOVERY]), host, port)
+        alive = []
+        with self.lock:
+            for b in list(self.boxes.values()):
+                if b.transport != "udp": continue
+                if time.time() - b.last_seen > 4 and b.online:
+                    b.online = False; self.log("cosmo box offline: %s (%s)" % (b.name, b.key))
+                if b.online: alive.append((b.host, b.port))
+        # sent outside the lock: a slow sendto must not stall snapshot() and, through it, the serial thread
+        for host, port in alive: self._send(bytes([P_CLIENT_ALIVE, 1]), host, port)
+        m = cfg.get("mqtt", {})
+        if m.get("enabled") and self.mqtt is None:
+            self.mqtt = MqttSubscriber(m, self.on_mqtt, self.log); self.mqtt.start()
+        elif (not m.get("enabled")) and self.mqtt is not None:
+            self.mqtt.stop(); self.mqtt = None
 
     def rx_loop(self):
         while self.running:
@@ -150,7 +157,10 @@ class CosmoClient:
             except OSError: time.sleep(0.2); continue
             if len(data) < 13 or data[0] != START_BYTE or data[1] != 0: continue
             self.packets += 1
-            self.on_packet(data[12:], addr[0], addr[1])
+            try: self.on_packet(data[12:], addr[0], addr[1])
+            except Exception as e:
+                self.errors += 1
+                if self.errors <= 20: self.log("cosmo bad packet from %s:%s (%d bytes): %s" % (addr[0], addr[1], len(data), e))
 
     # --- parsing
     def on_packet(self, p, host, port):
