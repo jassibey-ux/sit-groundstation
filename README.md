@@ -37,8 +37,20 @@ age, battery, fix LED, sats); weather conditions; auto-update reference off or f
 a stationary tracker at a known altitude; calculated sea-level pressure; disposition
 Disable / As-is / Recompute; data age tolerance.
 
+**Trackers** — the association list: one row per tracker ID (heard, or pre-registered
+before an exercise with *Add tracker*) with its **target** (what it is mounted on),
+callsign and **tactical symbol**. The symbol picker builds the CoT type from an
+affiliation (friend / assumed friend / neutral / unknown / suspect / hostile / pending)
+and a type (UAV rotary or fixed wing, aircraft, helicopter, ground unit / vehicle /
+dismount, sensor, sea surface), with an Advanced box for any other CoT type string; the
+preview is the MIL-STD-2525 symbol (milsymbol, bundled). A tracker's symbol goes out in
+its CoT on every output feed; trackers left on *Default* use the CoT tab's default. The
+target is added to CoT remarks and KML, and each session writes
+`logs/csv/<session>_<event>_associations.csv` (ID, carrier, slot, target, callsign,
+symbol, paired drone) next to the split CSVs. The Overview map draws the same symbols.
+
 **CoT** — local geoid height and the value from GPS with auto-update; Emit CoT
-toggle; type dropdown or free-text type; period; stale time; uid prefix and format
+toggle; default symbol (for trackers without their own); period; stale time; uid prefix and format
 string; IncludeFlowTag; editable destination table (enable, IP, port, interface,
 TTL — 224–239.x.x.x goes out as multicast) and the sink status pane.
 
@@ -50,7 +62,8 @@ exercise name, split CSV folder, Enable split log toggle, row count and file nam
 `/link.kml` (a network link that refreshes itself) with no file at all.
 
 **Overview** — live map with trails (street or satellite basemap; needs internet for
-tiles) and the tracker table where callsigns and per-tracker CoT types are set.
+tiles), trackers and drones drawn as their tactical symbols, and a summary of the
+Trackers tab.
 
 **Debug** — parser statistics, replay controls, clear trackers, event log.
 

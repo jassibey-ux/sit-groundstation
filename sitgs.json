@@ -84,6 +84,7 @@
     "pairs": {
       "127.0.0.1:5253": "17157"
     },
+    "box_types": {},
     "video_in_cot": true,
     "cot_unpaired": true,
     "unpaired_uid_prefix": "DJI.",

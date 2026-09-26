@@ -61,6 +61,16 @@ Overview table have Carrier and Slot columns; map labels read
 (e.g. "5") move to the full ID automatically the first time that tracker is
 heard.
 
+## Tactical symbols and targets (Trackers tab)
+
+Open the **Trackers** tab. For each tracker, type a **Target** (what it is
+mounted on) and pick a **Symbol**: affiliation (Friend, Hostile, ...) and type
+(e.g. Drone / UAV - rotary wing). The symbol is sent in that tracker's CoT on
+every output; trackers left on *Default* use the CoT tab's default symbol.
+Pre-register trackers before an exercise with **Add tracker**. Unpaired DJI
+boxes get their own symbol in the Drones tab. Please check the icons on your
+ATAK/WinTAK devices and tell us if any symbol looks wrong.
+
 ## If the app ever looks frozen
 
 1. Press **Enter** in the console window once.

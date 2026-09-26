@@ -43,6 +43,12 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 .two{display:grid;grid-template-columns:1fr 330px;gap:10px;min-height:0}
 .dest td input[type=text]{width:120px}.dest td input[type=number]{width:64px}
 .mono{font-family:Menlo,Consolas,monospace}
+.sympick{display:inline-flex;gap:4px;align-items:center}
+.sympv{display:inline-flex;width:36px;height:28px;align-items:center;justify-content:center}
+.sympv svg{max-width:36px;max-height:28px}
+.sympv.def{opacity:.45}
+tr.pre td{color:#8a969f;font-style:italic}
+tr.pre td input,tr.pre td select{font-style:normal}
 </style></head><body>
 <header><b>LoRa GPS RX and Logger</b><span id="hcfg" class="small"></span><span>DJI boxes <span id="nboxes">0</span> · drone CoT <span id="dcot">0</span></span><span style="margin-left:auto">uptime <span id="up">0</span>s</span></header>
 <main>
@@ -87,7 +93,7 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 <div class="col">
   <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column">
     <div class="tabs">
-      <button data-tab="baro" class="active">Barometric alt</button><button data-tab="cot">CoT</button><button data-tab="log">Log</button>
+      <button data-tab="baro" class="active">Barometric alt</button><button data-tab="trackers">Trackers</button><button data-tab="cot">CoT</button><button data-tab="log">Log</button>
       <button data-tab="drones">Drones</button><button data-tab="mission">Mission</button><button data-tab="video">Video</button><button data-tab="kml">KML out</button><button data-tab="overview">Overview</button><button data-tab="debug">Debug</button>
     </div>
 
@@ -111,6 +117,16 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
       </div>
     </div>
 
+    <!-- Trackers: association list -->
+    <div class="tab" id="tab-trackers" style="grid-template-columns:1fr;align-content:start;gap:8px">
+      <div class="box"><h4>Tracker associations</h4>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <input type="number" id="t_add_id" placeholder="e.g. 17005" style="width:110px"><button id="t_add">Add tracker</button>
+          <span class="small">Pre-register trackers before an exercise; a row goes live when that tracker is heard.</span></div>
+        <div style="overflow:auto"><table class="grid" id="assoc"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>Target</th><th>Callsign</th><th>Symbol</th><th>Paired drone</th><th>Msgs</th><th>Last heard</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="small" style="margin-top:6px">The symbol is sent in this tracker's CoT on every output feed; <b>Default</b> uses the default symbol from the CoT tab. Target appears in CoT remarks and KML, and each session saves this list to <span class="mono">logs/csv/…_associations.csv</span> next to the split CSVs.</div></div>
+    </div>
+
     <!-- CoT -->
     <div class="tab" id="tab-cot" style="grid-template-columns:1fr;align-content:start;gap:8px">
       <div style="display:flex;gap:18px;align-items:end;flex-wrap:wrap">
@@ -121,8 +137,7 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
         <span class="small mono">sent <span id="cotsent">0</span> · errors <span id="coterr">0</span></span>
       </div>
       <div style="display:flex;gap:18px;align-items:end;flex-wrap:wrap">
-        <label style="flex-direction:column;align-items:start">Type<select id="c_type_sel" style="width:220px"></select></label>
-        <label style="flex-direction:column;align-items:start">type string<input type="text" id="c_type" style="width:130px"></label>
+        <div style="display:flex;flex-direction:column;align-items:start">Default symbol <span class="small">(trackers without their own — set per tracker in the Trackers tab)</span><span id="c_type_pick"></span></div>
         <label style="flex-direction:column;align-items:start">CoT period [ms]<input type="number" id="c_period_ms"></label>
         <label style="flex-direction:column;align-items:start">stale [s]<input type="number" id="c_stale_s"></label>
       </div>
@@ -154,7 +169,7 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
     <!-- Drones (Cosmostreamer) -->
     <div class="tab" id="tab-drones" style="grid-template-columns:1fr;align-content:start;gap:10px">
       <div style="overflow:auto"><table class="grid" id="dgrid"><thead><tr>
-        <th>Box</th><th>IP</th><th>Type</th><th>Lic</th><th>Link</th><th>Drone</th><th>Tracker</th><th>Source</th><th>Lat</th><th>Lng</th><th>Alt rel</th><th>Sats</th><th>Yaw</th><th>Speed</th><th>Batt</th><th>RC</th><th>Mode</th><th>Flying</th><th>RTH</th><th>Age</th><th>Video</th>
+        <th>Box</th><th>IP</th><th>Type</th><th>Lic</th><th>Link</th><th>Drone</th><th>Tracker</th><th>Symbol</th><th>Source</th><th>Lat</th><th>Lng</th><th>Alt rel</th><th>Sats</th><th>Yaw</th><th>Speed</th><th>Batt</th><th>RC</th><th>Mode</th><th>Flying</th><th>RTH</th><th>Age</th><th>Video</th>
       </tr></thead><tbody></tbody></table></div>
       <div class="small">Pair each box with the puck mounted on that drone. A paired drone is one CoT entity (the tracker's uid and callsign): position comes from the DJI link while it is alive and falls back to the 915 MHz tracker when it is not — the <b>Source</b> column shows which. Boxes appear here by themselves when they are on the same network (discovery on) or when listed under Cosmostreamer boxes in the connection panel.</div>
       <div class="box"><h4>Raw telemetry (last text block per box)</h4><div class="status" id="draw" style="height:140px"></div></div>
@@ -214,8 +229,8 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
       <div id="map"></div>
       <div class="side">
         <div class="box"><h4>Trackers</h4>
-          <table class="grid" id="names"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>UID</th><th>Callsign</th><th>CoT type (opt)</th><th>Msgs</th></tr></thead><tbody></tbody></table>
-          <div class="small" style="margin-top:4px">Callsign shows on the TAK icon; leave CoT type blank to use the global type.</div></div>
+          <table class="grid" id="names"><thead><tr><th></th><th>ID</th><th>Target</th><th>Callsign</th><th>Msgs</th></tr></thead><tbody></tbody></table>
+          <div class="small" style="margin-top:4px">Edit targets, callsigns and symbols in the <a href="#" id="lnkTrackers">Trackers tab</a>.</div></div>
         <div class="box"><label><input type="checkbox" id="satmap"> Satellite basemap</label> <button id="btnFit">Fit to trackers</button></div>
       </div>
     </div>
@@ -233,21 +248,88 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 </div>
 </main>
 <script src="/static/leaflet.js"></script>
+<script src="/static/milsymbol.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-let cfg=null, cotTypes=[], state=null, dirty={}, saveTimer=null;
+let cfg=null, cotTypes=[], symTypes=[], symAffs=[], state=null, dirty={}, saveTimer=null;
 const api=(p,b,ms)=>{const ac=new AbortController(),to=setTimeout(()=>ac.abort(),ms||60000);
  return fetch(p,Object.assign({signal:ac.signal},b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{})).then(r=>r.json()).finally(()=>clearTimeout(to))};
 // full tracker id 17005 = band 17 (917 MHz), slot 005
 function idInfo(id){id=+id;return id>=1000?{mhz:900+Math.floor(id/1000),slot:id%1000}:{mhz:null,slot:id}}
 function idLabel(id){const i=idInfo(id);return i.mhz?`${id} · ${i.mhz} MHz · slot ${i.slot}`:String(id)}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+// ---------- tactical symbols: CoT type -> MIL-STD-2525 SIDC -> milsymbol SVG
+function parseCot(t){const m=/^a-([a-z])-(.+)$/.exec(t||'');if(!m)return null;
+ return symAffs.some(a=>a[0]==m[1])&&symTypes.some(x=>x[1]==m[2])?{aff:m[1],type:m[2]}:null}
+const symCache={};
+function symbolFor(type,size){const k=type+'|'+size;if(k in symCache)return symCache[k];let r=null;const p=String(type||'').split('-');
+ if(typeof ms!=='undefined'&&p[0]=='a'&&p.length>=3&&p[1].length==1&&p[2].length==1){const aff=p[1].toUpperCase(),dim=p[2].toUpperCase();
+  if('FANUSHPJK'.includes(aff)&&'PAGSUF'.includes(dim)){const fn=p.slice(3).join('').toUpperCase();
+   // non-standard function codes (e.g. the old A-C-H-q default) fall back to the closest valid parent symbol
+   for(let n=Math.min(6,fn.length);n>=0;n--){const s=new ms.Symbol('S'+aff+dim+'P'+fn.slice(0,n).padEnd(6,'-')+'-----',{size});
+    if(s.isValid()){const a=s.getAnchor(),z=s.getSize();r={svg:s.asSVG(),w:Math.ceil(z.width),h:Math.ceil(z.height),ax:Math.round(a.x),ay:Math.round(a.y)};break}}}}
+ return symCache[k]=r}
+function effType(id){const e=cfg&&cfg.trackers[String(id)];return (e&&e.cot_type)||(cfg?cfg.cot.type:'')}
+function symIcon(sy){return L.divIcon({className:'',html:sy.svg,iconSize:[sy.w,sy.h],iconAnchor:[sy.ax,sy.ay]})}
+// affiliation + type dropdowns build the CoT type; "Advanced" takes a raw string; defLabel adds a "use default" choice
+function symbolPicker(val,onChange,defLabel){
+ const w=document.createElement('span');w.className='sympick';
+ const pv=document.createElement('span');pv.className='sympv';
+ const aff=document.createElement('select');aff.innerHTML=symAffs.map(a=>`<option value="${a[0]}">${a[1]}</option>`).join('');
+ const ty=document.createElement('select');ty.style.maxWidth='220px';
+ ty.innerHTML=(defLabel?`<option value="">${defLabel}</option>`:'')+symTypes.map(t=>`<option value="${t[1]}">${t[0]}</option>`).join('')+'<option value="*">Advanced (type string)…</option>';
+ const adv=document.createElement('input');adv.type='text';adv.placeholder='a-h-A-M-F-Q';adv.style.width='120px';
+ function show(v){const p=parseCot(v);adv.style.display='none';aff.style.display='';
+  if(!v&&defLabel){ty.value='';aff.style.display='none'}
+  else if(p){aff.value=p.aff;ty.value=p.type}
+  else{ty.value='*';aff.style.display='none';adv.style.display='';adv.value=v||''}
+  const shown=v||(cfg?cfg.cot.type:''),sy=symbolFor(shown,20);pv.innerHTML=sy?sy.svg:'';pv.classList.toggle('def',!v);pv.title=shown}
+ function emit(v){val=v;show(v);onChange(v)}
+ aff.onchange=()=>emit(`a-${aff.value}-${ty.value}`);
+ ty.onchange=()=>{if(ty.value=='*'){aff.style.display='none';adv.style.display='';adv.value=val||'';adv.focus();return}
+  if(!ty.value)return emit('');const p=parseCot(val);emit(`a-${p?p.aff:aff.value}-${ty.value}`)};
+ adv.onchange=()=>{const v=adv.value.trim();if(v&&!/^[a-z](-[A-Za-z0-9]+)+$/.test(v)){alert('Not a CoT type string: '+v+'\nExample: a-h-A-M-F-Q');adv.value=val||'';return}emit(v)};
+ show(val);w.append(pv,aff,ty,adv);return w}
+async function saveBoxType(key,v){cfg.cosmo.box_types=Object.assign({},cfg.cosmo.box_types||{});if(v)cfg.cosmo.box_types[key]=v;else delete cfg.cosmo.box_types[key];
+ const r=await api('/api/config',{cosmo:{box_types:cfg.cosmo.box_types}});if(r&&r.ok===false)alert(r.error)}
+async function saveDefaultSymbol(v){const r=await api('/api/config',{cot:{type:v}});
+ if(r&&r.ok===false){alert(r.error);return}cfg.cot.type=v;assocKey='';renderAssoc(true)}
+
+// ---------- tracker associations (Trackers tab)
+let assocKey='';
+function assocIds(){return [...new Set([...(state?state.trackers.map(t=>String(t.id)):[]),...Object.keys(cfg.trackers)])].sort((a,b)=>a-b)}
+async function saveTrackers(){const r=await api('/api/config',{trackers:cfg.trackers});
+ if(r&&r.ok===false){alert(r.error);const c=await api('/api/config');cfg.trackers=c.config.trackers;renderAssoc(true)}}
+function setTrackerField(id,k,v){const e=Object.assign({},cfg.trackers[id]||{});if(v===''||v==null)delete e[k];else e[k]=v;cfg.trackers[id]=e;return saveTrackers()}
+function renderAssoc(force){if(!cfg)return;const tb=$('assoc').querySelector('tbody'),ids=assocIds();
+ const key=ids.join(',')+'|'+JSON.stringify(cfg.trackers)+'|'+cfg.cot.type;
+ if(!force&&(key==assocKey||(document.activeElement&&tb.contains(document.activeElement)))){updateAssocLive();return}
+ assocKey=key;tb.innerHTML='';
+ for(const id of ids){const e=cfg.trackers[id]||{},ii=idInfo(id),tr=document.createElement('tr');tr.dataset.id=id;
+  tr.innerHTML=`<td><b>${id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td><input type="text" class="tg" style="width:180px" placeholder="what it is mounted on"></td><td><input type="text" class="cs" style="width:110px" placeholder="${esc(uidOf(+id))}"></td><td class="sy"></td><td class="pd"></td><td class="mc"></td><td class="lh"></td><td><button class="rm" title="Remove this tracker's settings">✕</button></td>`;
+  tr.querySelector('.tg').value=e.target||'';tr.querySelector('.cs').value=e.callsign||'';
+  tr.querySelector('.tg').onchange=ev=>setTrackerField(id,'target',ev.target.value.trim());
+  tr.querySelector('.cs').onchange=ev=>setTrackerField(id,'callsign',ev.target.value.trim());
+  tr.querySelector('.sy').appendChild(symbolPicker(e.cot_type||'',v=>setTrackerField(id,'cot_type',v),'Default'));
+  tr.querySelector('.rm').onclick=()=>{if(!cfg.trackers[id])return;if(!confirm('Remove target, callsign and symbol for tracker '+id+'?'))return;delete cfg.trackers[id];saveTrackers()};
+  tb.appendChild(tr)}
+ updateAssocLive()}
+function updateAssocLive(){const c=(state&&state.cosmo)||{boxes:[],pairs:{}};
+ $('assoc').querySelectorAll('tbody tr').forEach(tr=>{const id=tr.dataset.id,st=state&&state.trackers.find(t=>String(t.id)==id);tr.classList.toggle('pre',!st);
+  tr.querySelector('.mc').textContent=st?st.msg_count:'';tr.querySelector('.lh').textContent=st?(st.age_s==null?'':Math.round(st.age_s)+' s ago'):'not heard yet';
+  const key=Object.keys(c.pairs||{}).find(k=>String(c.pairs[k])==id),b=key&&c.boxes.find(x=>x.key==key);tr.querySelector('.pd').textContent=key?((b&&b.name)||key):''})}
+$('t_add').onclick=()=>{const v=$('t_add_id').value.trim();if(!/^\d+$/.test(v)){alert('Enter the tracker ID number, e.g. 17005');return}
+ if(+v<1000&&!confirm(v+' looks like an old slot-only ID. Full IDs look like 17005 (917 MHz, slot 5). Add anyway?'))return;
+ if(!cfg.trackers[v])cfg.trackers[v]={};$('t_add_id').value='';saveTrackers().then(()=>renderAssoc(true))};
+$('t_add_id').addEventListener('keydown',e=>{if(e.key=='Enter')$('t_add').click()});
 
 // ---------- tabs
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('tab-'+b.dataset.tab).classList.add('active');if(b.dataset.tab=='overview'&&map)setTimeout(()=>map.invalidateSize(),50);if(b.dataset.tab=='mission')setTimeout(()=>{if(mmap){mmap.invalidateSize();if(!mFitted&&state){const t=state.trackers.find(x=>x.lat!=null);if(t){mmap.setView([t.lat,t.lon],16);mFitted=true}}}},60);if(b.dataset.tab=='video')buildWall();});
 
 // ---------- settings binding: element id -> config path
 const BIND={b_ref_pressure_bar:'barometer.ref_pressure_bar',b_ref_temp_c:'barometer.ref_temp_c',b_ref_altitude_m:'barometer.ref_altitude_m',b_ref_tracker_id:'barometer.ref_tracker_id',
- data_age_tolerance_s:'data_age_tolerance_s',c_geoid_height_m:'cot.geoid_height_m',c_geoid_auto_update:'cot.geoid_auto_update',c_type:'cot.type',c_period_ms:'cot.period_ms',c_stale_s:'cot.stale_s',
+ data_age_tolerance_s:'data_age_tolerance_s',c_geoid_height_m:'cot.geoid_height_m',c_geoid_auto_update:'cot.geoid_auto_update',c_period_ms:'cot.period_ms',c_stale_s:'cot.stale_s',
  c_uid_prefix:'cot.uid_prefix',c_uid_format:'cot.uid_format',c_include_flow_tag:'cot.include_flow_tag',l_nmea_dir:'log.nmea_dir',l_event_name:'log.event_name',l_split_dir:'log.split_dir',
  l_inject_rx_timestamp:'log.inject_rx_timestamp',k_enabled:'kml.enabled',k_path:'kml.path',k_geojson_path:'kml.geojson_path',k_interval_s:'kml.interval_s',k_trail_points:'kml.trail_points',
  ctype:'connection.type',cbaud:'connection.baud',chost:'connection.host',ctcp:'connection.tcp_port',cport:'connection.port',
@@ -264,7 +346,7 @@ function fillForm(){
   document.querySelector(`input[name=bmode][value=${cfg.barometer.mode}]`).checked=true;
   $('btnEmit').classList.toggle('on',cfg.cot.enabled);$('btnLog').classList.toggle('on',cfg.log.nmea_enabled);$('btnSplit').classList.toggle('on',cfg.log.split_enabled);
   $('serialRow').style.display=cfg.connection.type=='serial'?'flex':'none';$('netRow').style.display=cfg.connection.type=='network'?'flex':'none';
-  const sel=$('c_type_sel');sel.innerHTML=cotTypes.map(t=>`<option value="${t[1]}">${t[0]}</option>`).join('')+'<option value="">(custom)</option>';sel.value=cotTypes.some(t=>t[1]==cfg.cot.type)?cfg.cot.type:'';
+  const cp=$('c_type_pick');cp.innerHTML='';cp.appendChild(symbolPicker(cfg.cot.type,saveDefaultSymbol,null));
   $('co_hosts').value=(cfg.cosmo.manual_hosts||[]).join(', ');
   renderDest();renderNames();
   $('hcfg').textContent='config: '+cfgHere+'/sitgs.json';
@@ -273,7 +355,6 @@ for(const id in BIND){const el=$(id);el.addEventListener('change',()=>{let v=el.
 document.querySelectorAll('input[name=bauto]').forEach(r=>r.onchange=()=>queueSave('barometer.auto_update',r.value));
 document.querySelectorAll('input[name=bmode]').forEach(r=>r.onchange=()=>queueSave('barometer.mode',r.value));
 $('co_hosts').onchange=()=>{cfg.cosmo.manual_hosts=$('co_hosts').value.split(',').map(x=>x.trim()).filter(Boolean);api('/api/config',{cosmo:{manual_hosts:cfg.cosmo.manual_hosts}})};
-$('c_type_sel').onchange=e=>{if(e.target.value){$('c_type').value=e.target.value;queueSave('cot.type',e.target.value)}};
 $('btnEmit').onclick=()=>{cfg.cot.enabled=!cfg.cot.enabled;$('btnEmit').classList.toggle('on',cfg.cot.enabled);api('/api/config',{cot:{enabled:cfg.cot.enabled}})};
 $('btnLog').onclick=()=>{cfg.log.nmea_enabled=!cfg.log.nmea_enabled;$('btnLog').classList.toggle('on',cfg.log.nmea_enabled);api('/api/config',{log:{nmea_enabled:cfg.log.nmea_enabled}})};
 $('btnSplit').onclick=()=>{cfg.log.split_enabled=!cfg.log.split_enabled;$('btnSplit').classList.toggle('on',cfg.log.split_enabled);api('/api/config',{log:{split_enabled:cfg.log.split_enabled}})};
@@ -287,11 +368,10 @@ function renderDest(){const tb=$('dest').querySelector('tbody');tb.innerHTML=cfg
 $('btnAddDest').onclick=()=>{cfg.cot.destinations.push({enabled:true,host:'127.0.0.1',port:1800,iface:'0.0.0.0',ttl:2});api('/api/config',{cot:{destinations:cfg.cot.destinations}});renderDest()};
 
 // ---------- tracker names (Overview)
-function renderNames(){const ids=new Set([...(state?state.trackers.map(t=>String(t.id)):[]),...Object.keys(cfg.trackers)]);const tb=$('names').querySelector('tbody');
- const cur={};tb.querySelectorAll('tr').forEach(r=>cur[r.dataset.id]=r);
- tb.innerHTML='';[...ids].sort((a,b)=>a-b).forEach(id=>{const t=cfg.trackers[id]||{};const st=state&&state.trackers.find(x=>String(x.id)==id);
-  const tr=document.createElement('tr');tr.dataset.id=id;const ii=idInfo(id);tr.innerHTML=`<td><b>${id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td class="mono">${uidOf(+id)}</td><td><input type="text" class="cs" value="${t.callsign||''}" style="width:130px"></td><td><input type="text" class="ct" value="${t.cot_type||''}" style="width:110px"></td><td>${st?st.msg_count:''}</td>`;tb.appendChild(tr);
-  tr.querySelectorAll('input').forEach(el=>el.onchange=()=>{cfg.trackers[id]=cfg.trackers[id]||{};cfg.trackers[id].callsign=tr.querySelector('.cs').value;cfg.trackers[id].cot_type=tr.querySelector('.ct').value;if(!cfg.trackers[id].callsign&&!cfg.trackers[id].cot_type)delete cfg.trackers[id];api('/api/config',{trackers:cfg.trackers})});});}
+function renderNames(){const tb=$('names').querySelector('tbody');
+ tb.innerHTML=assocIds().map(id=>{const e=cfg.trackers[id]||{},st=state&&state.trackers.find(x=>String(x.id)==id),sy=symbolFor(effType(id),16);
+  return `<tr class="${st?'':'pre'}"><td>${sy?sy.svg:''}</td><td><b>${id}</b></td><td>${esc(e.target||'')}</td><td>${esc(e.callsign||uidOf(+id))}</td><td>${st?st.msg_count:''}</td></tr>`}).join('')}
+$('lnkTrackers').onclick=e=>{e.preventDefault();document.querySelector('.tabs button[data-tab=trackers]').click()};
 function uidOf(id){try{const m=cfg.cot.uid_format.match(/%0?(\d*)d/);const w=m&&m[1]?+m[1]:0;return cfg.cot.uid_prefix+String(id).padStart(w,'0')}catch(e){return cfg.cot.uid_prefix+id}}
 
 // ---------- connection
@@ -328,7 +408,7 @@ function drawSlots(s){const c=$('cvSlots'),g=sizeCanvas(c),W=c.width,H=c.height,
 function f(v,d){return v==null?'':(typeof v=='number'?v.toFixed(d):v)}
 function rssiPct(r){return r==null?0:Math.max(0,Math.min(100,(r+120)/70*100))}
 let ticking=false;
-function tipFor(t){const custom=t.callsign&&t.callsign!=uidOf(t.id);return (custom?t.callsign+' (':'')+idLabel(t.id)+(custom?')':'')}
+function tipFor(t){const custom=t.callsign&&t.callsign!=uidOf(t.id);return esc((custom?t.callsign+' (':'')+idLabel(t.id)+(custom?')':''))}
 async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api/state',null,5000);state=s;
  $('up').textContent=Math.round(s.uptime_s);$('lines').textContent=s.lines;$('reports').textContent=s.reports;$('bad').textContent=s.bad_sentences;$('ghosts').textContent=s.ghosts;$('bytes').textContent=s.bytes;
  $('connStatus').textContent=s.conn_status;$('ledConn').className='led '+(s.connected?'on':(s.conn_status.startsWith('error')||s.conn_status.startsWith('no ')?'warn':'off'));
@@ -342,12 +422,16 @@ async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api
  $('csvrows').textContent=s.csv_rows;$('ledSplit').className='led '+(cfg&&cfg.log.split_enabled?'on':'off');$('csvfiles').textContent=Object.values(s.csv_files).join('\n');
  $('dbgstats').textContent=`sentences ok/bad: ${s.lines}/${s.bad_sentences}   reports: ${s.reports}   rejected (noise/wrong dest): ${s.ghosts}   bytes: ${s.bytes}   cot sent: ${s.cot_sent}`;
  const dl=$('dbglog');const db=dl.scrollHeight-dl.scrollTop-dl.clientHeight<30;dl.textContent=s.debug.join('\n');if(db)dl.scrollTop=dl.scrollHeight;
- if(hasMap)for(const t of s.trackers){if(t.lat==null)continue;const ll=[t.lat,t.lon],col=colorFor(t.id);
-  if(!markers[t.id]){markers[t.id]=L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9}).addTo(map).bindTooltip(tipFor(t),{permanent:true,direction:'right'});trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map)}
-  else{markers[t.id].setLatLng(ll);trails[t.id].setLatLngs(s.trails[t.id]||[]);markers[t.id].setTooltipContent(tipFor(t))}
-  markers[t.id].setStyle({opacity:t.age_s>tol?.4:1,fillOpacity:t.age_s>tol?.3:.9});if(!fitted){map.setView(ll,15);fitted=true}}
+ if(hasMap)for(const t of s.trackers){if(t.lat==null)continue;const ll=[t.lat,t.lon],col=colorFor(t.id),et=effType(t.id),sy=symbolFor(et,26);
+  let m=markers[t.id];if(m&&m._symKey!==(sy?et:'')){map.removeLayer(m);m=null}
+  if(!m){m=markers[t.id]=(sy?L.marker(ll,{icon:symIcon(sy)}):L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9})).addTo(map)
+    .bindTooltip(tipFor(t),{permanent:true,direction:'right',offset:sy?[sy.w-sy.ax,0]:[0,0]});m._symKey=sy?et:''}
+  else{m.setLatLng(ll);m.setTooltipContent(tipFor(t))}
+  if(!trails[t.id])trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map);else trails[t.id].setLatLngs(s.trails[t.id]||[]);
+  const old=t.age_s>tol;if(m.setOpacity)m.setOpacity(old?.4:1);else m.setStyle({opacity:old?.4:1,fillOpacity:old?.3:.9});
+  if(!fitted){map.setView(ll,15);fitted=true}}
  renderDrones(s);
- if(cfg){drawTimeline(s);drawSlots(s);if($('tab-overview').classList.contains('active'))renderNamesIfChanged(s)}
+ if(cfg){drawTimeline(s);drawSlots(s);if($('tab-overview').classList.contains('active'))renderNamesIfChanged(s);if($('tab-trackers').classList.contains('active'))renderAssoc()}
 }catch(e){$('connStatus').textContent='no connection to sitgs backend';$('ledConn').className='led warn'}finally{ticking=false}}
 const dmarkers={},dtrails={},dlinks={};
 function renderDrones(s){const c=s.cosmo||{boxes:[]};$('nboxes').textContent=c.boxes.filter(b=>b.online).length;$('dcot').textContent=c.drone_cot_sent||0;$('dcot2').textContent=c.drone_cot_sent||0;
@@ -356,19 +440,25 @@ function renderDrones(s){const c=s.cosmo||{boxes:[]};$('nboxes').textContent=c.b
  const tb=$('dgrid').querySelector('tbody');const focused=document.activeElement&&tb.contains(document.activeElement);
  if(!focused){tb.innerHTML=c.boxes.map(b=>{const opts='<option value="">— none —</option>'+tids.map(t=>`<option value="${t}" ${String(b.tracker_id)==String(t)?'selected':''}>${idLabel(t)}</option>`).join('');
   const srcCls=b.source=='DJI'?'ok':(b.source=='LoRa'?'stale':'');const cls=b.online?'':'dead';
-  return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td>${b.license==null?'':(b.license?'✓':'✗')}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
+  return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td>${b.license==null?'':(b.license?'✓':'✗')}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="bsym"></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
+  tb.querySelectorAll('tr').forEach(row=>{const key=row.dataset.key,b=c.boxes.find(x=>x.key==key),cell=row.querySelector('.bsym');if(!b||!cell)return;
+   if(b.tracker_id){cell.innerHTML='<span class="small">tracker '+esc(b.tracker_id)+'\'s</span>';return}
+   cell.appendChild(symbolPicker((cfg.cosmo.box_types||{})[key]||'',v=>saveBoxType(key,v),'Default'))});
   tb.querySelectorAll('select.pair').forEach(el=>el.onchange=()=>{const key=el.closest('tr').dataset.key;cfg.cosmo.pairs=cfg.cosmo.pairs||{};if(el.value)cfg.cosmo.pairs[key]=String(el.value);else delete cfg.cosmo.pairs[key];api('/api/config',{cosmo:{pairs:cfg.cosmo.pairs}})});}
  const mb=$('m_box');if(!(document.activeElement===mb)){const cur=mb.value;mb.innerHTML=c.boxes.filter(b=>b.transport=='udp').map(b=>`<option value="${b.key}">${b.name||b.key} (${b.host})</option>`).join('');if(cur)mb.value=cur}
  $('draw').textContent=c.boxes.map(b=>`${b.name||b.key}: connected=${b.connected} fix=${b.fix} lat=${b.lat} lng=${b.lng} alt=${b.alt_rel} sats=${b.sats} yaw=${b.yaw} hspeed=${b.hspeed} batt=${b.battery} mode=${b.flight_mode} in_flight=${b.in_flight} rth=${b.rth} model=${b.model} sn=${b.sn} takeoff_msl=${b.takeoff_msl}`).join('\n');
  if(!hasMap)return;
  for(const b of c.boxes){if(b.lat==null||!b.fix)continue;const ll=[b.lat,b.lng],col=colorFor(b.tracker_id||b.name);
-  if(!dmarkers[b.key]){dmarkers[b.key]=L.marker(ll,{icon:L.divIcon({className:'',html:`<div style="width:14px;height:14px;background:${col};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 3px #0008"></div>`,iconSize:[14,14],iconAnchor:[7,7]})}).addTo(map).bindTooltip('DJI '+(b.name||b.key),{permanent:true,direction:'left'});dtrails[b.key]=L.polyline(b.trail||[ll],{color:col,weight:2,dashArray:'4 4',opacity:.8}).addTo(map)}
+  const bt=b.tracker_id?effType(b.tracker_id):(((cfg.cosmo.box_types||{})[b.key])||cfg.cot.type),bs=symbolFor(bt,22);
+  const bicon=bs?symIcon(bs):L.divIcon({className:'',html:`<div style="width:14px;height:14px;background:${col};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 3px #0008"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+  if(!dmarkers[b.key]){dmarkers[b.key]=L.marker(ll,{icon:bicon}).addTo(map).bindTooltip('DJI '+esc(b.name||b.key),{permanent:true,direction:'left'});dmarkers[b.key]._symKey=bt;dtrails[b.key]=L.polyline(b.trail||[ll],{color:col,weight:2,dashArray:'4 4',opacity:.8}).addTo(map)}
+  else if(dmarkers[b.key]._symKey!==bt){dmarkers[b.key].setIcon(bicon);dmarkers[b.key]._symKey=bt}
   else{dmarkers[b.key].setLatLng(ll);dtrails[b.key].setLatLngs(b.trail||[])}
   dmarkers[b.key].setOpacity(b.connected?1:.35);
   const tr=b.tracker_id&&s.trackers.find(t=>String(t.id)==String(b.tracker_id));
   if(tr&&tr.lat!=null){if(!dlinks[b.key])dlinks[b.key]=L.polyline([ll,[tr.lat,tr.lon]],{color:'#c0392b',weight:1.5,opacity:.8}).addTo(map);else dlinks[b.key].setLatLngs([ll,[tr.lat,tr.lon]])}
   else if(dlinks[b.key]){map.removeLayer(dlinks[b.key]);delete dlinks[b.key]}}}
-let lastIds='';function renderNamesIfChanged(s){const ids=s.trackers.map(t=>t.id+':'+t.msg_count).join(',');if(ids!=lastIds){lastIds=ids;if(!document.activeElement||!$('names').contains(document.activeElement))renderNames()}}
+let lastIds='';function renderNamesIfChanged(s,force){const ids=s.trackers.map(t=>t.id+':'+t.msg_count).join(',')+JSON.stringify(cfg.trackers)+cfg.cot.type+(force?Math.random():'');if(ids!=lastIds){lastIds=ids;if(!document.activeElement||!$('names').contains(document.activeElement))renderNames()}}
 // ---------- mission planner
 let mmap=null,mFitted=false,mission=null,mMarkers=[],mLine=null,mEnums={},mFinish=[];
 if(hasMap){mmap=L.map('mmap').setView([45.4,-75.7],5);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(mmap);
@@ -415,5 +505,5 @@ function buildWall(){const c=state&&state.cosmo?state.cosmo.boxes.filter(b=>b.tr
 $('v_reload').onclick=buildWall;
 
 let cfgHere='';
-(async()=>{const r=await api('/api/config');cfg=r.config;cotTypes=r.cot_types;cfgHere=r.here;fillForm();await refreshPorts();tick();setInterval(tick,1000);loadMissions()})();
+(async()=>{const r=await api('/api/config');cfg=r.config;cotTypes=r.cot_types;symTypes=r.symbol_types||[];symAffs=r.symbol_affiliations||[];cfgHere=r.here;fillForm();await refreshPorts();tick();setInterval(tick,1000);loadMissions()})();
 </script></body></html>

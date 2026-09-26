@@ -9,7 +9,7 @@ Web reimplementation of the LabVIEW "LoRa GPS RX and Logger" client, tab for tab
 
 Dependency: pyserial (a copy in ./serial works too)
 """
-import argparse, collections, csv, datetime as dt, json, math, os, queue, socket, struct, sys, threading, time
+import argparse, collections, csv, datetime as dt, json, math, os, queue, re, socket, struct, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     "filter": {"receiver_address": 111, "require_payload": True},
     "cosmo": {"enabled": True, "discovery": True, "manual_hosts": [],
               "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "username": "", "password": ""},
-              "pairs": {}, "video_in_cot": True, "cot_unpaired": True, "unpaired_uid_prefix": "DJI.", "dji_stale_s": 2.5,
+              "pairs": {}, "box_types": {}, "video_in_cot": True, "cot_unpaired": True, "unpaired_uid_prefix": "DJI.", "dji_stale_s": 2.5,
               "mission_cmds": {"start": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"start\",\"value2\":\"%NAME%.kmz\"}",
                                "pause": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"pause\"}",
                                "resume": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"resume\"}",
@@ -60,6 +60,21 @@ DEFAULT_CONFIG = {
 COT_TYPES = [("Friendly Air", "a-f-A"), ("Friendly Air UAS (H-q)", "a-f-A-C-H-q"), ("Friendly Air Mil UAS", "a-f-A-M-F-Q"),
              ("Hostile Air", "a-h-A"), ("Hostile Air UAS (H-q)", "a-h-A-C-H-q"), ("Neutral Air", "a-n-A"),
              ("Unknown Air", "a-u-A"), ("Friendly Ground", "a-f-G"), ("Hostile Ground", "a-h-G")]
+
+# Symbol picker catalogue: CoT type after "a-<affiliation>-". Every code except the LabVIEW
+# default A-C-H-q appears in ATAK's CoTtypes.xml; that one is kept so existing configs still parse.
+SYMBOL_AFFILIATIONS = [("f", "Friend"), ("a", "Assumed friend"), ("n", "Neutral"), ("u", "Unknown"),
+                       ("s", "Suspect"), ("h", "Hostile"), ("p", "Pending")]
+SYMBOL_TYPES = [("Air (generic)", "A"), ("Drone / UAV - rotary wing", "A-M-H-Q"), ("Drone / UAV - fixed wing", "A-M-F-Q"),
+                ("Civil drone - fixed wing", "A-C-F-q"), ("Civil rotary drone (old LabVIEW default)", "A-C-H-q"),
+                ("Helicopter - civil", "A-C-H"), ("Aircraft - civil fixed wing", "A-C-F"), ("Helicopter - military", "A-M-H"),
+                ("Aircraft - military fixed wing", "A-M-F"), ("Ground (generic)", "G"), ("Ground unit", "G-U"),
+                ("Ground vehicle", "G-E-V"), ("Dismounted troops", "G-U-C-I"), ("Sensor / equipment", "G-E-S"),
+                ("Sea surface", "S")]
+COT_TYPE_RE = re.compile(r"^[a-z](-[A-Za-z0-9]+)+$")
+
+def valid_cot_type(t):
+    return isinstance(t, str) and bool(COT_TYPE_RE.match(t))
 
 # ------------------------------------------------------------------------- helpers
 def nmea_checksum_ok(s):
@@ -174,7 +189,11 @@ def video_xml(url, alias):
             'address="%s" port="554" roverPort="-1" rtspReliable="0" ignoreEmbeddedKLV="false" alias="%s"/></__video>'
             ) % (alias, url, alias, url.split("//")[-1].split(":")[0].split("/")[0], alias)
 
+def xml_esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
 def cot_xml(uid, typ, callsign, lat, lon, hae, ce, speed, course, altsrc, remarks, stale_s, now, flow_tag=False, video=None, extra=""):
+    uid, typ, callsign, remarks = xml_esc(uid), xml_esc(typ), xml_esc(callsign), xml_esc(remarks)
     stale = now + dt.timedelta(seconds=float(stale_s))
     flow = '<_flow-tags_ sitgs="%s"/>' % iso_z(now) if flow_tag else ""
     vid = video_xml(video[0], video[1]) if video else ""
@@ -193,23 +212,27 @@ def cot_event(tr, cfg, now, video=None, source="LoRa915"):
     hae = (alt_msl if alt_msl is not None else 0.0) + geoid
     ce = (tr.hdop or 1.0) * 2.5
     remarks = "id=%d rssi=%s batt=%smV baro=%s src=%s" % (tr.id, tr.rssi, tr.batt_mv, None if tr.baro_alt is None else round(tr.baro_alt, 1), source)
+    if tcfg.get("target"): remarks = "target=%s %s" % (tcfg["target"], remarks)
     return cot_xml(uid, typ, callsign, tr.lat, tr.lon, hae, ce, tr.sog, tr.cog, "BARO" if use_baro else "GPS", remarks,
                    c["stale_s"], now, c["include_flow_tag"], video)
 
 def cot_event_dji(box, cfg, now, tracker=None, geoid_default=None):
     """CoT built from a Cosmostreamer box; if paired, carries the tracker's uid/callsign so the drone is one entity."""
     c = cfg["cot"]; co = cfg["cosmo"]
+    tcfg = {}
     if tracker is not None:
         tcfg = cfg["trackers"].get(str(tracker.id), {})
         uid = c["uid_prefix"] + (c["uid_format"] % tracker.id); callsign = tcfg.get("callsign") or uid; typ = tcfg.get("cot_type") or c["type"]
         geoid = tracker.geoid_sep if (c["geoid_auto_update"] and tracker.geoid_sep is not None) else float(c["geoid_height_m"])
     else:
-        uid = co.get("unpaired_uid_prefix", "DJI.") + (box.name or box.key).replace(" ", "_"); callsign = box.name or uid; typ = c["type"]
+        uid = co.get("unpaired_uid_prefix", "DJI.") + (box.name or box.key).replace(" ", "_"); callsign = box.name or uid
+        typ = co.get("box_types", {}).get(box.key) or c["type"]
         geoid = float(c["geoid_height_m"])
     alt_rel = box.alt_rel() or 0.0
     msl = (box.takeoff_msl if box.takeoff_msl is not None else 0.0) + alt_rel
     remarks = "dji=%s model=%s sats=%s batt=%s%% mode=%s alt_rel=%.0f src=DJI" % (box.name, box.values.get("camera_model"), box.values.get("gps_sat_count"),
                                                                                    box.values.get("battery_level"), box.values.get("flight_mode"), alt_rel)
+    if tcfg.get("target"): remarks = "target=%s %s" % (tcfg["target"], remarks)
     video = (box.to_dict()["video_url"], box.name or box.key) if (co.get("video_in_cot", True) and box.transport == "udp") else None
     return cot_xml(uid, typ, callsign, box.lat(), box.lng(), msl + geoid, 3.0, box.hspeed(), box.yaw(), "GPS", remarks,
                    c["stale_s"], now, c["include_flow_tag"], video)
@@ -259,6 +282,7 @@ class GroundStation:
         self.start = time.time(); self.lines = 0; self.bytes = 0
         self.conn_status = "disconnected"; self.connected = False; self.conn_thread = None; self.conn_stop = threading.Event()
         self.conn_gen = 0; self.ser = None; self.last_loop = 0.0; self.stall_cancel_at = None; self.reopen_gen = None
+        self.assoc_dirty = True; self.assoc_path = None
         self.nmea_fh = None; self.nmea_path = None; self.nmea_lines = 0
         self.csv_fhs = {}; self.csv_rows = 0; self.session_stamp = None
         self.cot = None; self.rebuild_cot()
@@ -284,7 +308,22 @@ class GroundStation:
     def save_config(self):
         with open(self.cfg_path, "w") as f: json.dump(self.cfg, f, indent=2)
 
+    @staticmethod
+    def check_patch(patch):
+        """Reject malformed symbols / tracker ids before anything is applied or saved."""
+        bad = []
+        for tid, e in (patch.get("trackers") or {}).items():
+            if not str(tid).isdigit(): bad.append("tracker id %r (must be a number, e.g. 17005)" % tid)
+            t = (e or {}).get("cot_type") or ""
+            if t and not valid_cot_type(t): bad.append("symbol %r for tracker %s" % (t, tid))
+        if "type" in patch.get("cot", {}) and not valid_cot_type(patch["cot"]["type"]):
+            bad.append("default symbol %r" % patch["cot"]["type"])
+        for key, t in (patch.get("cosmo", {}).get("box_types") or {}).items():
+            if t and not valid_cot_type(t): bad.append("symbol %r for drone box %s" % (t, key))
+        if bad: raise ValueError("invalid " + "; ".join(bad) + " - a CoT type looks like a-h-A-M-F-Q")
+
     def update_config(self, patch):
+        self.check_patch(patch)
         with self.lock:
             old_cot = json.dumps(self.cfg["cot"]["destinations"]); old_log = json.dumps(self.cfg["log"])
             deep_update(self.cfg, patch)
@@ -293,8 +332,11 @@ class GroundStation:
             if "pairs" in patch.get("cosmo", {}):
                 self.cfg["cosmo"]["pairs"] = {k: str(v) for k, v in patch["cosmo"]["pairs"].items() if v not in (None, "", 0)}
             if "manual_hosts" in patch.get("cosmo", {}): self.cfg["cosmo"]["manual_hosts"] = patch["cosmo"]["manual_hosts"]
+            if "box_types" in patch.get("cosmo", {}):
+                self.cfg["cosmo"]["box_types"] = {k: v for k, v in patch["cosmo"]["box_types"].items() if v}
             for tr in self.tracks.values(): tr.callsign = self.cfg["trackers"].get(str(tr.id), {}).get("callsign") or self.uid(tr.id)
             self.save_config()
+            if "trackers" in patch or "cot" in patch or "cosmo" in patch or "log" in patch: self.assoc_dirty = True
         if json.dumps(self.cfg["cot"]["destinations"]) != old_cot: self.rebuild_cot()
         if json.dumps(self.cfg["log"]) != old_log: self.apply_logging()
 
@@ -359,8 +401,11 @@ class GroundStation:
             tr = self.tracks.get(tid)
             if tr is None:
                 tr = self.tracks[tid] = Track(tid); self.migrate_short_refs(tr)
-                tr.callsign = self.cfg["trackers"].get(str(tid), {}).get("callsign") or self.uid(tid)
-                self.dbg("new tracker id=%d (%s MHz, slot %d)" % (tid, tr.carrier_mhz or "?", tr.id_slot))
+                tcfg = self.cfg["trackers"].get(str(tid), {})
+                tr.callsign = tcfg.get("callsign") or self.uid(tid)
+                self.dbg("new tracker id=%d (%s MHz, slot %d)%s" % (tid, tr.carrier_mhz or "?", tr.id_slot,
+                                                                    " target=%s" % tcfg["target"] if tcfg.get("target") else ""))
+                self.assoc_dirty = True
             tr.msg_count += 1; tr.rx_time = now
             for ks, kd in (("rssi", "rssi"), ("batt_mv", "batt_mv"), ("pressure_pa", "pressure_pa"), ("temp_c", "temp_c"),
                            ("baro_alt_std", "baro_alt_std"), ("hdop", "hdop"), ("nsat", "nsat"), ("alt", "gps_alt"),
@@ -472,13 +517,15 @@ class GroundStation:
         with self.lock:
             for tr in self.tracks.values():
                 if tr.lat is None or (tr.age() or 1e9) > tol: continue
-                name = tr.callsign or self.uid(tr.id); alt = tr.gps_alt or 0
+                name = xml_esc(tr.callsign or self.uid(tr.id)); alt = tr.gps_alt or 0
+                target = self.cfg["trackers"].get(str(tr.id), {}).get("target")
                 coords = " ".join("%.6f,%.6f,%.1f" % (lon, lat, a or 0) for _, lat, lon, a in list(tr.trail)[-n:])
-                out.append('<Placemark><name>%s</name><description>id=%d rssi=%s batt=%s mV age=%.0fs</description>'
+                out.append('<Placemark><name>%s</name><description>%sid=%d rssi=%s batt=%s mV age=%.0fs</description>'
                            '<Point><altitudeMode>absolute</altitudeMode><coordinates>%.6f,%.6f,%.1f</coordinates></Point></Placemark>'
                            '<Placemark><name>%s trail</name><Style><LineStyle><color>ff33ccff</color><width>2</width></LineStyle></Style>'
                            '<LineString><altitudeMode>absolute</altitudeMode><coordinates>%s</coordinates></LineString></Placemark>'
-                           % (name, tr.id, tr.rssi, tr.batt_mv, tr.age() or 0, tr.lon, tr.lat, alt, name, coords))
+                           % (name, "target=%s " % xml_esc(target) if target else "", tr.id, tr.rssi, tr.batt_mv, tr.age() or 0,
+                              tr.lon, tr.lat, alt, name, coords))
         return '<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>sitgs</name>%s</Document></kml>' % "".join(out)
 
     def build_geojson(self):
@@ -487,7 +534,8 @@ class GroundStation:
             for tr in self.tracks.values():
                 if tr.lat is None or (tr.age() or 1e9) > tol: continue
                 feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [tr.lon, tr.lat, tr.gps_alt or 0]},
-                              "properties": {"id": tr.id, "callsign": tr.callsign, "rssi": tr.rssi, "batt_mv": tr.batt_mv, "age_s": tr.age(),
+                              "properties": {"id": tr.id, "callsign": tr.callsign, "target": self.cfg["trackers"].get(str(tr.id), {}).get("target"),
+                                             "rssi": tr.rssi, "batt_mv": tr.batt_mv, "age_s": tr.age(),
                                              "sog": tr.sog, "cog": tr.cog, "baro_alt": tr.baro_alt}})
         return json.dumps({"type": "FeatureCollection", "features": feats})
 
@@ -513,6 +561,8 @@ class GroundStation:
         while True:
             try:
                 self.check_serial()
+                if self.assoc_dirty:
+                    self.assoc_dirty = False; self.write_associations()
                 if time.time() - last_hb >= 60:
                     last_hb = time.time(); self.dbg(self.heartbeat())
                 day = dt.date.today().isoformat()
@@ -523,6 +573,31 @@ class GroundStation:
             except Exception as e:
                 self.debug.append("monitor error: %s" % e)
             time.sleep(1)
+
+    ASSOC_COLS = ["Tracker_ID", "Carrier_MHz", "Slot", "Target", "Callsign", "Symbol_CoT_Type", "Effective_CoT_Type",
+                  "Paired_Drone_Box", "Heard_This_Session"]
+
+    def write_associations(self):
+        """Per-session sidecar next to the split CSVs: which tracker was on which target, and its symbol.
+        The §5.2 CSV columns stay untouched; this file is what ties them (and the NMEA log) to targets."""
+        L = self.cfg["log"]
+        if not (L.get("split_enabled") or L.get("nmea_enabled")) or not self.session_stamp: return
+        d = os.path.join(DATA_DIR, L["split_dir"]); os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "%s_%s_associations.csv" % (self.session_stamp, L["event_name"]))
+        with self.lock:
+            trackers = json.loads(json.dumps(self.cfg["trackers"])); heard = set(self.tracks)
+        pairs = self.cfg["cosmo"].get("pairs", {}); default_type = self.cfg["cot"]["type"]
+        ids = sorted({int(k) for k in trackers if str(k).isdigit()} | heard)
+        tmp = path + ".tmp"
+        with open(tmp, "w", newline="") as f:
+            w = csv.writer(f); w.writerow(self.ASSOC_COLS)
+            for tid in ids:
+                e = trackers.get(str(tid), {}); tr = Track(tid)
+                box = next((k for k, v in pairs.items() if str(v) == str(tid)), "")
+                w.writerow([tid, tr.carrier_mhz or "", tr.id_slot, e.get("target", ""), e.get("callsign", ""), e.get("cot_type", ""),
+                            e.get("cot_type") or default_type, box, "yes" if tid in heard else "no"])
+        os.replace(tmp, path)
+        if path != self.assoc_path: self.assoc_path = path; self.dbg("associations file %s" % path)
 
     def heartbeat(self):
         def up(t): return "-" if t is None else ("up" if t.is_alive() else "DOWN")
@@ -719,7 +794,8 @@ def make_handler(gs, page):
         def _get(self):
             p = self.path.split("?")[0]
             if p == "/api/state": self._send(200, "application/json", json.dumps(gs.snapshot()))
-            elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "here": DATA_DIR}))
+            elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "symbol_types": SYMBOL_TYPES,
+                                                                                                "symbol_affiliations": SYMBOL_AFFILIATIONS, "here": DATA_DIR}))
             elif p == "/api/ports": self._send(200, "application/json", json.dumps({"ports": list_ports(), "auto": find_port(probe=False)}))
             elif p == "/api/missions": self._send(200, "application/json", json.dumps({"missions": gs.missions.list(), "drone_enums": mission_mod.DRONE_ENUMS, "finish_actions": mission_mod.FINISH_ACTIONS}))
             elif p.startswith("/missions/") and p.endswith(".kmz"):
