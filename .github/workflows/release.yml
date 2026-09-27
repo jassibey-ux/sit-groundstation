@@ -9,7 +9,18 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        run: python tests/run_all.py
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +49,7 @@ jobs:
           EXE=dist/sitgs; [ "$RUNNER_OS" = "Windows" ] && EXE=dist/sitgs.exe
           "$EXE" --list-ports
           # prove bundled UI + replay work: start, poll /api/state, stop
-          "$EXE" --replay capture.nmea --speed 0 --web-port 8099 &
+          "$EXE" --replay capture.nmea --speed 0 --web-port 8099 --no-browser &
           PID=$!
           ok=""
           for i in $(seq 1 30); do

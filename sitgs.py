@@ -37,7 +37,8 @@ DEFAULT_CONFIG = {
                 {"enabled": True, "host": "127.0.0.1", "port": 1800, "iface": "0.0.0.0", "ttl": 2}]},
     "kml": {"enabled": False, "path": "logs/kml/tracks.kml", "geojson_path": "logs/kml/tracks.geojson",
             "interval_s": 2, "trail_points": 300},
-    "web": {"port": 8090},
+    "web": {"port": 8090, "open_browser": True},
+    "unlisted_trackers": "record",
     "data_age_tolerance_s": 30,
     "tdma_slot_ms": 50,
     "filter": {"receiver_address": 111, "require_payload": True},
@@ -72,6 +73,17 @@ SYMBOL_TYPES = [("Air (generic)", "A"), ("Drone / UAV - rotary wing", "A-M-H-Q")
                 ("Ground vehicle", "G-E-V"), ("Dismounted troops", "G-U-C-I"), ("Sensor / equipment", "G-E-S"),
                 ("Sea surface", "S")]
 COT_TYPE_RE = re.compile(r"^[a-z](-[A-Za-z0-9]+)+$")
+
+# Per-tracker processing (association list, cfg.trackers[id]["processing"]); absent keys take these values.
+# alt_source "default" follows the global barometric disposition; "gps" is that disposition's "disable".
+PROCESSING_DEFAULTS = {"record": True, "alt_source": "default", "nmea_file": False, "nmea_processed": False}
+ALT_SOURCES = ("default", "gps", "as-is", "recompute")
+UNLISTED_POLICIES = ("record", "display", "ignore")
+
+def nmea_sentence(body):
+    x = 0
+    for ch in body: x ^= ord(ch)
+    return "$%s*%02X" % (body, x)
 
 def valid_cot_type(t):
     return isinstance(t, str) and bool(COT_TYPE_RE.match(t))
@@ -128,11 +140,18 @@ class Track:
         self.pressure_pa = None; self.temp_c = None; self.baro_alt_std = None; self.baro_alt = None
         self.rssi = None; self.batt_mv = None
         self.gps_time = None; self.rx_time = None; self.msg_count = 0; self.last_cot = 0.0
+        # processing in effect for this tracker (from the association list) and what it produced
+        self.record = True; self.alt_mode = "disable"; self.csv_rows = 0; self.nmea_blocks = 0
+        self.last_row = None; self.files = {}
         self.trail = collections.deque(maxlen=2000)      # (t, lat, lon, alt)
         self.rx_hist = collections.deque(maxlen=600)     # (t, slot, rssi)
 
     def age(self):
         return (time.time() - self.rx_time.timestamp()) if self.rx_time else None
+
+    def alt_msl(self):
+        """Altitude chosen by this tracker's processing: barometric unless its mode is GPS ("disable")."""
+        return self.baro_alt if (self.alt_mode != "disable" and self.baro_alt is not None) else self.gps_alt
 
     def to_dict(self):
         d = {k: v for k, v in self.__dict__.items() if k not in ("trail", "rx_hist")}
@@ -207,8 +226,8 @@ def cot_event(tr, cfg, now, video=None, source="LoRa915"):
     uid = c["uid_prefix"] + (c["uid_format"] % tr.id)
     typ = tcfg.get("cot_type") or c["type"]; callsign = tcfg.get("callsign") or uid
     geoid = tr.geoid_sep if (c["geoid_auto_update"] and tr.geoid_sep is not None) else float(c["geoid_height_m"])
-    use_baro = cfg["barometer"]["mode"] != "disable" and tr.baro_alt is not None
-    alt_msl = tr.baro_alt if use_baro else tr.gps_alt
+    use_baro = tr.alt_mode != "disable" and tr.baro_alt is not None
+    alt_msl = tr.alt_msl()
     hae = (alt_msl if alt_msl is not None else 0.0) + geoid
     ce = (tr.hdop or 1.0) * 2.5
     remarks = "id=%d rssi=%s batt=%smV baro=%s src=%s" % (tr.id, tr.rssi, tr.batt_mv, None if tr.baro_alt is None else round(tr.baro_alt, 1), source)
@@ -285,6 +304,7 @@ class GroundStation:
         self.assoc_dirty = True; self.assoc_path = None
         self.nmea_fh = None; self.nmea_path = None; self.nmea_lines = 0
         self.csv_fhs = {}; self.csv_rows = 0; self.session_stamp = None
+        self.nmea_fhs = {}; self.last_rxts = None; self.ignored = {}
         self.cot = None; self.rebuild_cot()
         self.reports = 0; self.ghosts = 0; self.sea_level_pa = float(cfg["barometer"]["ref_pressure_bar"]) * 1e5
         self.replay = None
@@ -321,6 +341,18 @@ class GroundStation:
         for key, t in (patch.get("cosmo", {}).get("box_types") or {}).items():
             if t and not valid_cot_type(t): bad.append("symbol %r for drone box %s" % (t, key))
         if bad: raise ValueError("invalid " + "; ".join(bad) + " - a CoT type looks like a-h-A-M-F-Q")
+        for tid, e in (patch.get("trackers") or {}).items():
+            p = (e or {}).get("processing")
+            if p is None: continue
+            if not isinstance(p, dict) or set(p) - set(PROCESSING_DEFAULTS):
+                bad.append("processing for tracker %s (allowed: %s)" % (tid, ", ".join(PROCESSING_DEFAULTS)))
+            elif p.get("alt_source", "default") not in ALT_SOURCES:
+                bad.append("altitude source %r for tracker %s (one of %s)" % (p["alt_source"], tid, ", ".join(ALT_SOURCES)))
+            elif any(not isinstance(p[k], bool) for k in ("record", "nmea_file", "nmea_processed") if k in p):
+                bad.append("processing switches for tracker %s must be true/false" % tid)
+        if "unlisted_trackers" in patch and patch["unlisted_trackers"] not in UNLISTED_POLICIES:
+            bad.append("unlisted-tracker policy %r (one of %s)" % (patch["unlisted_trackers"], ", ".join(UNLISTED_POLICIES)))
+        if bad: raise ValueError("invalid " + "; ".join(bad))
 
     def update_config(self, patch):
         self.check_patch(patch)
@@ -334,6 +366,10 @@ class GroundStation:
             if "manual_hosts" in patch.get("cosmo", {}): self.cfg["cosmo"]["manual_hosts"] = patch["cosmo"]["manual_hosts"]
             if "box_types" in patch.get("cosmo", {}):
                 self.cfg["cosmo"]["box_types"] = {k: v for k, v in patch["cosmo"]["box_types"].items() if v}
+            if self.cfg.get("unlisted_trackers") == "ignore":
+                for tid in [t for t in self.tracks if not self.is_listed(t)]:
+                    del self.tracks[tid]; self.dbg("tracker %d is not in the list and unlisted trackers are ignored - removed" % tid)
+            if "trackers" in patch: self.ignored = {t: n for t, n in self.ignored.items() if not self.is_listed(t)}
             for tr in self.tracks.values(): tr.callsign = self.cfg["trackers"].get(str(tr.id), {}).get("callsign") or self.uid(tr.id)
             self.save_config()
             if "trackers" in patch or "cot" in patch or "cosmo" in patch or "log" in patch: self.assoc_dirty = True
@@ -343,6 +379,17 @@ class GroundStation:
     def uid(self, tid):
         try: return self.cfg["cot"]["uid_prefix"] + (self.cfg["cot"]["uid_format"] % tid)
         except (TypeError, ValueError): return "%s%d" % (self.cfg["cot"]["uid_prefix"], tid)
+
+    def is_listed(self, tid):
+        t = self.cfg["trackers"]
+        return str(tid) in t or (tid >= 1000 and str(tid % 1000) in t)   # short key: pre-v0.1.1 entry not yet migrated
+
+    def processing(self, tid):
+        """Processing in effect for a tracker: its association-list entry, else the unlisted-tracker policy."""
+        p = dict(PROCESSING_DEFAULTS)
+        if self.is_listed(tid): p.update(self.cfg["trackers"].get(str(tid), {}).get("processing") or {})
+        else: p["record"] = self.cfg.get("unlisted_trackers", "record") == "record"
+        return p
 
     def migrate_short_refs(self, tr):
         """Settings saved before v0.1.1 refer to trackers by slot only (157); move them onto the
@@ -376,15 +423,21 @@ class GroundStation:
             self.nmea_fh = open(self.nmea_path, "a", buffering=1); self.dbg("NMEA log opened %s" % self.nmea_path)
         elif not L["nmea_enabled"] and self.nmea_fh is not None:
             self.nmea_fh.close(); self.nmea_fh = None; self.dbg("NMEA log closed")
+        if not L["nmea_enabled"] and self.nmea_fhs:
+            for f in list(self.nmea_fhs.values()): f.close()
+            self.nmea_fhs = {}; self.dbg("per-target NMEA files closed")
         if not L["split_enabled"] and self.csv_fhs:
             for f, _ in self.csv_fhs.values(): f.close()
             self.csv_fhs = {}; self.dbg("split CSV logs closed")
 
     def on_raw(self, line):
         self.lines += 1; self.raw.append(line)
+        if line.startswith("$RFMSGEND") and self.cfg["log"]["inject_rx_timestamp"]:
+            # reused by the per-target NMEA files so their blocks match the combined log exactly
+            self.last_rxts = "$RXTIMESTAMP,%s*" % dt.datetime.now(dt.timezone.utc).strftime("%Y,%m,%d,%H,%M,%S.%f")[:-3]
         if self.nmea_fh:
             if line.startswith("$RFMSGEND") and self.cfg["log"]["inject_rx_timestamp"]:
-                self.nmea_fh.write("$RXTIMESTAMP,%s*\n" % dt.datetime.now(dt.timezone.utc).strftime("%Y,%m,%d,%H,%M,%S.%f")[:-3]); self.nmea_lines += 1
+                self.nmea_fh.write(self.last_rxts + "\n"); self.nmea_lines += 1
             self.nmea_fh.write(line + "\n"); self.nmea_lines += 1
 
     def on_report(self, r):
@@ -396,7 +449,13 @@ class GroundStation:
             self.ghosts += 1
             if self.ghosts <= 20: self.dbg("rejected packet: hdr=%s rssi=%s" % (r["raw"][0], r.get("rssi")))
             return
-        now = dt.datetime.now(dt.timezone.utc); tid = r["addr"]; self.reports += 1
+        tid = r["addr"]
+        if self.cfg.get("unlisted_trackers") == "ignore" and not self.is_listed(tid):
+            n = self.ignored[tid] = self.ignored.get(tid, 0) + 1
+            if n == 1: self.dbg("ignored tracker %d: not in the tracker list (unlisted trackers are set to ignore)" % tid)
+            return
+        now = dt.datetime.now(dt.timezone.utc); self.reports += 1
+        p = self.processing(tid)
         with self.lock:
             tr = self.tracks.get(tid)
             if tr is None:
@@ -407,6 +466,8 @@ class GroundStation:
                                                                     " target=%s" % tcfg["target"] if tcfg.get("target") else ""))
                 self.assoc_dirty = True
             tr.msg_count += 1; tr.rx_time = now
+            tr.record = p["record"]
+            tr.alt_mode = {"default": self.cfg["barometer"]["mode"], "gps": "disable"}.get(p["alt_source"], p["alt_source"])
             for ks, kd in (("rssi", "rssi"), ("batt_mv", "batt_mv"), ("pressure_pa", "pressure_pa"), ("temp_c", "temp_c"),
                            ("baro_alt_std", "baro_alt_std"), ("hdop", "hdop"), ("nsat", "nsat"), ("alt", "gps_alt"),
                            ("geoid", "geoid_sep"), ("sog_ms", "sog"), ("cog", "cog")):
@@ -423,9 +484,10 @@ class GroundStation:
             t = now.timestamp(); slot = int((t % 1.0) * 1000 // int(self.cfg["tdma_slot_ms"]))
             tr.rx_hist.append((t, slot, tr.rssi))
             self.apply_barometer(tr)
-            if tr.fix_valid: tr.trail.append((t, tr.lat, tr.lon, tr.gps_alt))
+            if tr.fix_valid: tr.trail.append((t, tr.lat, tr.lon, tr.alt_msl()))
         if tr.fix_valid:
             self.write_csv(tr, now); self.maybe_send_cot(tr, now)
+        self.write_target_nmea(tr, r, p)
 
     def apply_barometer(self, tr):
         b = self.cfg["barometer"]
@@ -435,12 +497,24 @@ class GroundStation:
             b["ref_pressure_bar"] = round(self.sea_level_pa / 1e5, 5); b["ref_temp_c"] = tr.temp_c
         elif b["auto_update"] != "tracker":
             self.sea_level_pa = sea_level_pressure(float(b["ref_pressure_bar"]) * 1e5, float(b["ref_temp_c"]), float(b["ref_altitude_m"]))
-        if b["mode"] == "recompute": tr.baro_alt = baro_altitude(tr.pressure_pa, float(b["ref_temp_c"]), self.sea_level_pa)
+        if tr.alt_mode == "recompute": tr.baro_alt = baro_altitude(tr.pressure_pa, float(b["ref_temp_c"]), self.sea_level_pa)
         else: tr.baro_alt = tr.baro_alt_std
 
+    def csv_row(self, tr, now):
+        return [tr.gps_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if tr.gps_time else "",
+                now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], str(tr.fix_valid), "%.6f" % tr.lat, "%.6f" % tr.lon,
+                "" if tr.gps_alt is None else "%.1f" % tr.gps_alt, "" if tr.hdop is None else str(tr.hdop),
+                "" if tr.sog is None else "%.2f" % tr.sog, "" if tr.cog is None else "%.1f" % tr.cog,
+                "" if tr.pressure_pa is None else "%.5f" % (tr.pressure_pa / 1e5), "" if tr.temp_c is None else str(tr.temp_c),
+                "" if (tr.baro_alt is None or tr.alt_mode == "disable") else "%.1f" % tr.baro_alt, "%d.0" % tr.id,
+                "" if tr.rssi is None else str(tr.rssi)]
+
     def write_csv(self, tr, now):
+        """Split CSV row (manual 5.2 columns). The row is kept on the track for the live board even when
+        the tracker is not recorded, so the operator sees exactly what is (or would be) written."""
+        row = tr.last_row = self.csv_row(tr, now)
         L = self.cfg["log"]
-        if not L["split_enabled"]: return
+        if not L["split_enabled"] or not tr.record: return
         fh = self.csv_fhs.get(tr.id)
         if fh is None:
             d = os.path.join(DATA_DIR, L["split_dir"]); os.makedirs(d, exist_ok=True)
@@ -448,15 +522,44 @@ class GroundStation:
             f = open(path, "a", newline="", buffering=1); w = csv.writer(f)
             if new: w.writerow(self.CSV_COLS)
             fh = self.csv_fhs[tr.id] = (f, w); self.dbg("split CSV opened %s" % path)
-        _, w = fh; b = self.cfg["barometer"]["mode"]
-        w.writerow([tr.gps_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if tr.gps_time else "",
-                    now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], tr.fix_valid, "%.6f" % tr.lat, "%.6f" % tr.lon,
-                    "" if tr.gps_alt is None else "%.1f" % tr.gps_alt, "" if tr.hdop is None else tr.hdop,
-                    "" if tr.sog is None else "%.2f" % tr.sog, "" if tr.cog is None else "%.1f" % tr.cog,
-                    "" if tr.pressure_pa is None else "%.5f" % (tr.pressure_pa / 1e5), "" if tr.temp_c is None else tr.temp_c,
-                    "" if (tr.baro_alt is None or b == "disable") else "%.1f" % tr.baro_alt, "%d.0" % tr.id,
-                    "" if tr.rssi is None else tr.rssi])
-        self.csv_rows += 1
+            tr.files["csv"] = os.path.basename(path)
+        fh[1].writerow(row)
+        self.csv_rows += 1; tr.csv_rows += 1
+
+    def write_target_nmea(self, tr, r, p):
+        """Per-target NMEA files chosen in the association list. The combined receiver log is untouched.
+        raw: the tracker's own report blocks, byte-identical to the combined log (same $RXTIMESTAMP).
+        processed: its GGA/RMC, with the GGA altitude replaced by the tracker's altitude choice."""
+        L = self.cfg["log"]; live = L["nmea_enabled"] and tr.record
+        for kind, want in (("raw", p["nmea_file"]), ("processed", p["nmea_processed"])):
+            key = (tr.id, kind); fh = self.nmea_fhs.get(key)
+            if not (live and want):
+                if fh: fh.close(); del self.nmea_fhs[key]; self.dbg("per-target NMEA (%s) closed for %d" % (kind, tr.id))
+                continue
+            if fh is None:
+                d = os.path.join(DATA_DIR, L["nmea_dir"]); os.makedirs(d, exist_ok=True)
+                slug = re.sub(r"[^A-Za-z0-9_-]+", "_", self.cfg["trackers"].get(str(tr.id), {}).get("target", "")).strip("_")[:40]
+                name = "%s_%s_ID%d%s%s.nmea" % (self.session_stamp, L["event_name"], tr.id, "_" + slug if slug else "",
+                                                 "_processed" if kind == "processed" else "")
+                fh = self.nmea_fhs[key] = open(os.path.join(d, name), "a", buffering=1)
+                tr.files["nmea" if kind == "raw" else "nmea_processed"] = name; self.dbg("per-target NMEA opened %s" % name)
+            if kind == "raw":
+                for line in r["raw"]:
+                    if line.startswith("$RFMSGEND") and L["inject_rx_timestamp"] and self.last_rxts: fh.write(self.last_rxts + "\n")
+                    fh.write(line + "\n")
+                tr.nmea_blocks += 1
+            else:
+                for line in r["raw"]:
+                    tag = line[3:6] if line.startswith("$") else ""
+                    if tag == "RMC": fh.write(nmea_sentence(line[1:].split("*", 1)[0]) + "\n")   # content as received, checksum filled in
+                    elif tag == "GGA": fh.write(self.gga_with_altitude(line, tr) + "\n")
+
+    @staticmethod
+    def gga_with_altitude(line, tr):
+        f = line[1:].split("*", 1)[0].split(",")
+        alt = tr.alt_msl()
+        if len(f) > 10 and alt is not None: f[9] = "%.1f" % alt; f[10] = "M"
+        return nmea_sentence(",".join(f))
 
     # ---- Cosmostreamer pairing / fusion
     def pair_for_tracker(self, tid):
@@ -517,7 +620,7 @@ class GroundStation:
         with self.lock:
             for tr in self.tracks.values():
                 if tr.lat is None or (tr.age() or 1e9) > tol: continue
-                name = xml_esc(tr.callsign or self.uid(tr.id)); alt = tr.gps_alt or 0
+                name = xml_esc(tr.callsign or self.uid(tr.id)); alt = tr.alt_msl() or 0
                 target = self.cfg["trackers"].get(str(tr.id), {}).get("target")
                 coords = " ".join("%.6f,%.6f,%.1f" % (lon, lat, a or 0) for _, lat, lon, a in list(tr.trail)[-n:])
                 out.append('<Placemark><name>%s</name><description>%sid=%d rssi=%s batt=%s mV age=%.0fs</description>'
@@ -533,7 +636,7 @@ class GroundStation:
         with self.lock:
             for tr in self.tracks.values():
                 if tr.lat is None or (tr.age() or 1e9) > tol: continue
-                feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [tr.lon, tr.lat, tr.gps_alt or 0]},
+                feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [tr.lon, tr.lat, tr.alt_msl() or 0]},
                               "properties": {"id": tr.id, "callsign": tr.callsign, "target": self.cfg["trackers"].get(str(tr.id), {}).get("target"),
                                              "rssi": tr.rssi, "batt_mv": tr.batt_mv, "age_s": tr.age(),
                                              "sog": tr.sog, "cog": tr.cog, "baro_alt": tr.baro_alt}})
@@ -575,27 +678,31 @@ class GroundStation:
             time.sleep(1)
 
     ASSOC_COLS = ["Tracker_ID", "Carrier_MHz", "Slot", "Target", "Callsign", "Symbol_CoT_Type", "Effective_CoT_Type",
-                  "Paired_Drone_Box", "Heard_This_Session"]
+                  "Paired_Drone_Box", "Heard_This_Session", "Listed", "Record", "Altitude_Source", "NMEA_File", "Processed_NMEA_File"]
 
     def write_associations(self):
-        """Per-session sidecar next to the split CSVs: which tracker was on which target, and its symbol.
-        The §5.2 CSV columns stay untouched; this file is what ties them (and the NMEA log) to targets."""
+        """Per-session sidecar next to the split CSVs: which tracker was on which target, its symbol and the
+        processing applied. The manual 5.2 CSV columns stay untouched; this file ties them (and the NMEA logs) to targets."""
         L = self.cfg["log"]
         if not (L.get("split_enabled") or L.get("nmea_enabled")) or not self.session_stamp: return
         d = os.path.join(DATA_DIR, L["split_dir"]); os.makedirs(d, exist_ok=True)
         path = os.path.join(d, "%s_%s_associations.csv" % (self.session_stamp, L["event_name"]))
         with self.lock:
-            trackers = json.loads(json.dumps(self.cfg["trackers"])); heard = set(self.tracks)
-        pairs = self.cfg["cosmo"].get("pairs", {}); default_type = self.cfg["cot"]["type"]
-        ids = sorted({int(k) for k in trackers if str(k).isdigit()} | heard)
+            trackers = json.loads(json.dumps(self.cfg["trackers"])); heard = {t: dict(tr.files) for t, tr in self.tracks.items()}
+        pairs = self.cfg["cosmo"].get("pairs", {}); default_type = self.cfg["cot"]["type"]; gmode = self.cfg["barometer"]["mode"]
+        ids = sorted({int(k) for k in trackers if str(k).isdigit()} | set(heard))
         tmp = path + ".tmp"
         with open(tmp, "w", newline="") as f:
             w = csv.writer(f); w.writerow(self.ASSOC_COLS)
             for tid in ids:
-                e = trackers.get(str(tid), {}); tr = Track(tid)
+                e = trackers.get(str(tid), {}); tr = Track(tid); p = self.processing(tid); files = heard.get(tid, {})
                 box = next((k for k, v in pairs.items() if str(v) == str(tid)), "")
+                alt = p["alt_source"] if p["alt_source"] != "default" else "default (%s)" % ("gps" if gmode == "disable" else gmode)
                 w.writerow([tid, tr.carrier_mhz or "", tr.id_slot, e.get("target", ""), e.get("callsign", ""), e.get("cot_type", ""),
-                            e.get("cot_type") or default_type, box, "yes" if tid in heard else "no"])
+                            e.get("cot_type") or default_type, box, "yes" if tid in heard else "no", "yes" if self.is_listed(tid) else "no",
+                            "yes" if p["record"] else "no", alt,
+                            files.get("nmea", "on (no data yet)" if p["nmea_file"] else ""),
+                            files.get("nmea_processed", "on (no data yet)" if p["nmea_processed"] else "")])
         os.replace(tmp, path)
         if path != self.assoc_path: self.assoc_path = path; self.dbg("associations file %s" % path)
 
@@ -699,7 +806,7 @@ class GroundStation:
         self.conn_thread = threading.Thread(target=run, daemon=True); self.conn_thread.start()
 
     # ---- snapshot for UI
-    def snapshot(self):
+    def snapshot(self, trails=True):
         with self.lock:
             tol = float(self.cfg["data_age_tolerance_s"]); cutoff = time.time() - 120
             timeline = {str(t.id): [[round(x - cutoff, 2), s, r] for x, s, r in t.rx_hist if x >= cutoff] for t in self.tracks.values()}
@@ -725,7 +832,9 @@ class GroundStation:
                     "raw": list(self.raw)[-120:], "debug": list(self.debug)[-100:], "timeline_window_s": 120, "timeline": timeline,
                     "cosmo": cs,
                     "trackers": [dict(t.to_dict(), paired_box=next((k for k, v in pairs.items() if str(v) == str(t.id)), None)) for t in sorted(self.tracks.values(), key=lambda t: t.id)],
-                    "trails": {str(t.id): [[lat, lon] for _, lat, lon, _ in list(t.trail)[-500:]] for t in self.tracks.values()}}
+                    "trails": {str(t.id): [[lat, lon] for _, lat, lon, _ in list(t.trail)[-500:]] for t in self.tracks.values()} if trails else {},
+                    "logging": {"nmea": self.nmea_fh is not None, "csv": bool(self.cfg["log"]["split_enabled"])},
+                    "unlisted_policy": self.cfg.get("unlisted_trackers", "record"), "ignored": {str(k): v for k, v in self.ignored.items()}}
 
 def find_port(probe=True):
     """Pick the receiver. Pucks plugged in over USB are also Feather M0s, so when more than one
@@ -793,7 +902,7 @@ def make_handler(gs, page):
                 self._send(500, "application/json", json.dumps({"ok": False, "error": str(e)}))
         def _get(self):
             p = self.path.split("?")[0]
-            if p == "/api/state": self._send(200, "application/json", json.dumps(gs.snapshot()))
+            if p == "/api/state": self._send(200, "application/json", json.dumps(gs.snapshot(trails="trails=0" not in self.path)))
             elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "symbol_types": SYMBOL_TYPES,
                                                                                                 "symbol_affiliations": SYMBOL_AFFILIATIONS, "here": DATA_DIR}))
             elif p == "/api/ports": self._send(200, "application/json", json.dumps({"ports": list_ports(), "auto": find_port(probe=False)}))
@@ -859,6 +968,7 @@ def main():
     ap.add_argument("--port"); ap.add_argument("--baud", type=int); ap.add_argument("--list-ports", action="store_true")
     ap.add_argument("--record", help="append raw serial bytes to this file"); ap.add_argument("--replay"); ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--web-port", type=int); ap.add_argument("--no-connect", action="store_true")
+    ap.add_argument("--no-browser", action="store_true", help="do not open the UI in the default browser at start")
     args = ap.parse_args()
     disable_quickedit()
     if args.list_ports:
@@ -881,6 +991,9 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print("UI: http://localhost:%d" % port)
     print("Data folder (settings + logs): %s" % DATA_DIR)
+    if cfg["web"].get("open_browser", True) and not args.no_browser:
+        import webbrowser
+        threading.Timer(1.0, lambda: webbrowser.open("http://localhost:%d" % port)).start()
     if args.replay: gs.replay_file(args.replay, args.speed)
     elif cfg["connection"].get("auto_connect", True) and not args.no_connect: gs.connect()
     # On a terminal: one live line rewritten every second, a new line only when the connection status

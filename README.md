@@ -27,6 +27,13 @@ Other ways to start it:
 TCP port, for the quad-channel PoE receiver). Green LED = connected. Counters for
 lines, reports, bad checksums, bytes.
 
+**Live trackers** (left column, always visible) — one row per tracker with a health dot
+(green: fix and heard within 3 s; amber: no fix or late; red: older than the data-age
+tolerance; grey: in the list but not heard), target, age, fix/sats, altitude, RSSI,
+battery and split-CSV rows written. The summary line says how many are ok / late / stale
+and shows **NOT LOGGING** in red if neither log is on. Click a row to see the latest row
+written to its CSV. **Live data** (first tab) shows every CSV field for every tracker.
+
 **Incoming data** — raw sentence stream. **Message timeline** — one row per tracker,
 a tick per received report over the last 120 s. **Transmission time slots** — the
 TDMA slot (0–19, 50 ms each) in which each report arrived; a healthy tracker draws a
@@ -47,7 +54,18 @@ preview is the MIL-STD-2525 symbol (milsymbol, bundled). A tracker's symbol goes
 its CoT on every output feed; trackers left on *Default* use the CoT tab's default. The
 target is added to CoT remarks and KML, and each session writes
 `logs/csv/<session>_<event>_associations.csv` (ID, carrier, slot, target, callsign,
-symbol, paired drone) next to the split CSVs. The Overview map draws the same symbols.
+symbol, paired drone, processing) next to the split CSVs. The Overview map draws the same symbols.
+
+Per tracker, the list also sets how its data is processed, live:
+*Record* (off: still on screen and in CoT, but no split CSV or per-target NMEA);
+*Altitude* (Default = the Barometric tab disposition, or GPS / baro as-is / baro
+recomputed for this tracker — used in its CSV baro column, CoT, KML and processed NMEA);
+*NMEA file* (its raw report blocks in `logs/nmea/<session>_<event>_ID<id>_<target>.nmea`,
+identical to its blocks in the combined log); *Processed NMEA* (`…_processed.nmea`: its
+GGA with the altitude replaced by the chosen altitude, plus RMC, all with valid checksums).
+*Trackers not in this list*: record normally, show only, or ignore completely (ignored IDs
+are listed with an Add button). The combined `RFReceiverRSSILog.nmea` always keeps
+everything received.
 
 **CoT** — local geoid height and the value from GPS with auto-update; Emit CoT
 toggle; default symbol (for trackers without their own); period; stale time; uid prefix and format
@@ -66,6 +84,12 @@ tiles), trackers and drones drawn as their tactical symbols, and a summary of th
 Trackers tab.
 
 **Debug** — parser statistics, replay controls, clear trackers, event log.
+
+## Tests
+
+    python tests/run_all.py          # full IDs, symbols, processing, watchdog (runs in CI before every build)
+    python tests/soak.py --trackers 40 --duration 2700    # live-serial soak (macOS/Linux)
+    python tests/make_multi.py --trackers 40 --seconds 60 --out multi.nmea
 
 ## Files
 

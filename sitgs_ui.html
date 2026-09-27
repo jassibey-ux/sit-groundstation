@@ -7,8 +7,8 @@
 body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.35 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;height:100vh;display:grid;grid-template-rows:auto 1fr}
 header{background:#1d2731;color:#fff;padding:6px 12px;display:flex;align-items:center;gap:16px;font-size:12px;font-family:Menlo,Consolas,monospace}
 header b{color:#7fd6dd;font-size:13px}
-main{display:grid;grid-template-columns:380px 1fr;gap:8px;padding:8px;min-height:0}
-.col{display:flex;flex-direction:column;gap:8px;min-height:0}
+main{display:grid;grid-template-columns:460px minmax(0,1fr);gap:8px;padding:8px;min-height:0}
+.col{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
 .box{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px}
 .box h4{margin:0 0 6px;font:600 11px Menlo,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 label{display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;color:var(--ink)}
@@ -23,7 +23,7 @@ button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .led.off{background:#b5bec6}
 textarea.raw{width:100%;height:220px;font:11px Menlo,Consolas,monospace;border:1px solid var(--line);background:#fafbfc;resize:vertical;white-space:pre;overflow:auto;color:var(--ink)}
 canvas{width:100%;display:block;background:#fafbfc;border:1px solid var(--line);border-radius:3px}
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.tabs{display:flex;flex-wrap:wrap;gap:2px;border-bottom:1px solid var(--line);margin-bottom:8px}
 .tabs button{border:1px solid var(--line);border-bottom:none;border-radius:4px 4px 0 0;background:var(--chip)}
 .tabs button.active{background:#fff;font-weight:600}
 .tab{min-height:0;overflow:auto}
@@ -48,6 +48,19 @@ tr.stale td{color:var(--warn)} tr.dead td{color:#9aa}
 .sympv svg{max-width:36px;max-height:28px}
 .sympv.def{opacity:.45}
 tr.pre td{color:#8a969f;font-style:italic}
+.hdot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#c3cad0;vertical-align:middle}
+.hdot.g{background:#39d353}.hdot.a{background:#f2b632}.hdot.r{background:#c0392b}
+.board{max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:3px}
+table.lb{border-collapse:collapse;width:100%;font:11px Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+table.lb th,table.lb td{padding:2px 4px;border-bottom:1px solid #eef1f3;white-space:nowrap;text-align:left}
+table.lb th{position:sticky;top:0;background:var(--chip);font-weight:600;color:var(--muted);font-size:10px;z-index:1}
+table.lb tr.row{cursor:pointer} table.lb tr.row:hover td{background:#f1f6f7}
+table.lb tr.detail td{background:#fafbfc;white-space:normal;padding:4px 8px}
+.tgt{max-width:96px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.bar.sm{width:34px;height:8px}
+.notlog{color:#c0392b;font-weight:700}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:1px 10px;font:11px Menlo,Consolas,monospace}
+.kv b{font-weight:400;color:var(--muted)}
 tr.pre td input,tr.pre td select{font-style:normal}
 </style></head><body>
 <header><b>LoRa GPS RX and Logger</b><span id="hcfg" class="small"></span><span>DJI boxes <span id="nboxes">0</span> · drone CoT <span id="dcot">0</span></span><span style="margin-left:auto">uptime <span id="up">0</span>s</span></header>
@@ -79,9 +92,12 @@ tr.pre td input,tr.pre td select{font-style:normal}
     </details>
     <div class="small mono" style="margin-top:6px">lines <span id="lines">0</span> · reports <span id="reports">0</span> · bad <span id="bad">0</span> · rejected <span id="ghosts">0</span> · bytes <span id="bytes">0</span></div>
   </div>
-  <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column">
+  <div class="box"><h4>Live trackers <span id="lbsum" class="small" style="text-transform:none;letter-spacing:0"></span></h4>
+    <div class="board"><table class="lb" id="lboard"><thead><tr><th></th><th>ID</th><th>Target</th><th>Age</th><th>Fix</th><th>Alt m</th><th>RSSI</th><th>Batt</th><th>CSV</th></tr></thead><tbody></tbody></table></div>
+    <div class="small" style="margin-top:3px"><span class="hdot g"></span> fix, heard &lt;3 s · <span class="hdot a"></span> no fix or late · <span class="hdot r"></span> older than the data-age tolerance · <span class="hdot"></span> registered, not heard. Click a row for its latest logged record.</div></div>
+  <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto">
     <h4>Incoming data</h4>
-    <textarea class="raw" id="raw" readonly></textarea>
+    <textarea class="raw" id="raw" readonly style="height:110px;min-height:60px"></textarea>
     <h4 style="margin-top:8px">Message timeline <span class="small" style="text-transform:none;letter-spacing:0">(last 120 s, one row per tracker)</span></h4>
     <canvas id="cvTimeline" height="90"></canvas>
     <h4 style="margin-top:8px">Transmission time slots <span class="small" style="text-transform:none;letter-spacing:0">(TDMA slot of arrival, 0–19)</span></h4>
@@ -93,12 +109,18 @@ tr.pre td input,tr.pre td select{font-style:normal}
 <div class="col">
   <div class="box" style="flex:1;min-height:0;display:flex;flex-direction:column">
     <div class="tabs">
-      <button data-tab="baro" class="active">Barometric alt</button><button data-tab="trackers">Trackers</button><button data-tab="cot">CoT</button><button data-tab="log">Log</button>
+      <button data-tab="live" class="active">Live data</button><button data-tab="baro">Barometric alt</button><button data-tab="trackers">Trackers</button><button data-tab="cot">CoT</button><button data-tab="log">Log</button>
       <button data-tab="drones">Drones</button><button data-tab="mission">Mission</button><button data-tab="video">Video</button><button data-tab="kml">KML out</button><button data-tab="overview">Overview</button><button data-tab="debug">Debug</button>
     </div>
 
+    <!-- Live data: every split-CSV field per tracker, as it arrives -->
+    <div class="tab active" id="tab-live" style="grid-template-columns:1fr;align-content:start;gap:6px">
+      <div class="small" id="livesum"></div>
+      <div style="overflow:auto"><table class="grid" id="livegrid"><thead><tr><th></th><th>ID</th><th>Target</th><th>Callsign</th><th>GPS time</th><th>Received</th><th>Fix</th><th>Lat</th><th>Lon</th><th>GPS alt</th><th>HDOP</th><th>SOG m/s</th><th>COG</th><th>Pressure bar</th><th>T °C</th><th>Baro alt</th><th>RSSI</th><th>Batt</th><th>Sats</th><th>Age s</th><th>Alt source</th><th>Rec</th><th>CSV rows</th><th>Per-target NMEA</th></tr></thead><tbody></tbody></table></div>
+    </div>
+
     <!-- Barometric alt -->
-    <div class="tab active two" id="tab-baro">
+    <div class="tab two" id="tab-baro">
       <div style="overflow:auto"><table class="grid" id="grid"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>RSSI</th><th></th><th>Pressure</th><th>T</th><th>GPS Alt</th><th>Baro Alt</th><th>Age</th><th>Battery</th><th>Fix</th><th>Sats</th></tr></thead><tbody></tbody></table></div>
       <div class="side">
         <div class="box"><h4>Weather conditions</h4>
@@ -123,8 +145,13 @@ tr.pre td input,tr.pre td select{font-style:normal}
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
           <input type="number" id="t_add_id" placeholder="e.g. 17005" style="width:110px"><button id="t_add">Add tracker</button>
           <span class="small">Pre-register trackers before an exercise; a row goes live when that tracker is heard.</span></div>
-        <div style="overflow:auto"><table class="grid" id="assoc"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>Target</th><th>Callsign</th><th>Symbol</th><th>Paired drone</th><th>Msgs</th><th>Last heard</th><th></th></tr></thead><tbody></tbody></table></div>
-        <div class="small" style="margin-top:6px">The symbol is sent in this tracker's CoT on every output feed; <b>Default</b> uses the default symbol from the CoT tab. Target appears in CoT remarks and KML, and each session saves this list to <span class="mono">logs/csv/…_associations.csv</span> next to the split CSVs.</div></div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <label>Trackers not in this list <select id="t_unlisted"><option value="record">record normally</option><option value="display">show only, don't record</option><option value="ignore">ignore completely</option></select></label>
+          <span class="small">Set for all listed: <label><input type="checkbox" id="ta_rec" checked> record</label>
+            <select id="ta_alt"></select> <label><input type="checkbox" id="ta_nmea"> NMEA file</label> <label><input type="checkbox" id="ta_proc"> processed NMEA</label> <button id="ta_apply">Apply to all</button></span></div>
+        <div id="t_ignored" class="small" style="margin-bottom:6px"></div>
+        <div style="overflow:auto"><table class="grid" id="assoc"><thead><tr><th>ID</th><th>Carrier</th><th>Slot</th><th>Target</th><th>Callsign</th><th>Symbol</th><th title="write this tracker to the split CSV and per-target NMEA files">Record</th><th>Altitude</th><th title="this tracker's raw report blocks in its own .nmea file">NMEA file</th><th title="GGA/RMC with the GGA altitude replaced by the chosen altitude">Processed NMEA</th><th>Paired drone</th><th>Msgs</th><th>Last heard</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="small" style="margin-top:6px">The symbol is sent in this tracker's CoT on every output feed; <b>Default</b> uses the default symbol from the CoT tab. Target appears in CoT remarks and KML. <b>Record</b> off keeps a tracker live on screen and in CoT but out of the split CSV and per-target NMEA files. <b>Altitude</b> picks GPS or barometric altitude for this tracker's CSV baro column, CoT, KML and processed NMEA. The combined NMEA log always keeps everything received. Each session saves this list, with the processing used, to <span class="mono">logs/csv/…_associations.csv</span>.</div></div>
     </div>
 
     <!-- CoT -->
@@ -303,15 +330,21 @@ async function saveTrackers(){const r=await api('/api/config',{trackers:cfg.trac
  if(r&&r.ok===false){alert(r.error);const c=await api('/api/config');cfg.trackers=c.config.trackers;renderAssoc(true)}}
 function setTrackerField(id,k,v){const e=Object.assign({},cfg.trackers[id]||{});if(v===''||v==null)delete e[k];else e[k]=v;cfg.trackers[id]=e;return saveTrackers()}
 function renderAssoc(force){if(!cfg)return;const tb=$('assoc').querySelector('tbody'),ids=assocIds();
- const key=ids.join(',')+'|'+JSON.stringify(cfg.trackers)+'|'+cfg.cot.type;
+ const key=ids.join(',')+'|'+JSON.stringify(cfg.trackers)+'|'+cfg.cot.type+'|'+cfg.unlisted_trackers+'|'+cfg.barometer.mode;
  if(!force&&(key==assocKey||(document.activeElement&&tb.contains(document.activeElement)))){updateAssocLive();return}
  assocKey=key;tb.innerHTML='';
  for(const id of ids){const e=cfg.trackers[id]||{},ii=idInfo(id),tr=document.createElement('tr');tr.dataset.id=id;
-  tr.innerHTML=`<td><b>${id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td><input type="text" class="tg" style="width:180px" placeholder="what it is mounted on"></td><td><input type="text" class="cs" style="width:110px" placeholder="${esc(uidOf(+id))}"></td><td class="sy"></td><td class="pd"></td><td class="mc"></td><td class="lh"></td><td><button class="rm" title="Remove this tracker's settings">✕</button></td>`;
+  tr.innerHTML=`<td><b>${id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td><input type="text" class="tg" style="width:180px" placeholder="what it is mounted on"></td><td><input type="text" class="cs" style="width:110px" placeholder="${esc(uidOf(+id))}"></td><td class="sy"></td><td><input type="checkbox" class="p_rec"></td><td><select class="p_alt"></select></td><td><input type="checkbox" class="p_nmea"></td><td><input type="checkbox" class="p_proc"></td><td class="pd"></td><td class="mc"></td><td class="lh"></td><td><button class="rm" title="Remove this tracker's settings">✕</button></td>`;
   tr.querySelector('.tg').value=e.target||'';tr.querySelector('.cs').value=e.callsign||'';
   tr.querySelector('.tg').onchange=ev=>setTrackerField(id,'target',ev.target.value.trim());
   tr.querySelector('.cs').onchange=ev=>setTrackerField(id,'callsign',ev.target.value.trim());
   tr.querySelector('.sy').appendChild(symbolPicker(e.cot_type||'',v=>setTrackerField(id,'cot_type',v),'Default'));
+  const pr=procOf(id),alt=tr.querySelector('.p_alt');alt.innerHTML=altOptions();alt.value=pr.alt_source;
+  tr.querySelector('.p_rec').checked=pr.record;tr.querySelector('.p_nmea').checked=pr.nmea_file;tr.querySelector('.p_proc').checked=pr.nmea_processed;
+  tr.querySelector('.p_rec').onchange=ev=>setProcessing(id,'record',ev.target.checked);
+  alt.onchange=ev=>setProcessing(id,'alt_source',ev.target.value);
+  tr.querySelector('.p_nmea').onchange=ev=>setProcessing(id,'nmea_file',ev.target.checked);
+  tr.querySelector('.p_proc').onchange=ev=>setProcessing(id,'nmea_processed',ev.target.checked);
   tr.querySelector('.rm').onclick=()=>{if(!cfg.trackers[id])return;if(!confirm('Remove target, callsign and symbol for tracker '+id+'?'))return;delete cfg.trackers[id];saveTrackers()};
   tb.appendChild(tr)}
  updateAssocLive()}
@@ -323,6 +356,27 @@ $('t_add').onclick=()=>{const v=$('t_add_id').value.trim();if(!/^\d+$/.test(v)){
  if(+v<1000&&!confirm(v+' looks like an old slot-only ID. Full IDs look like 17005 (917 MHz, slot 5). Add anyway?'))return;
  if(!cfg.trackers[v])cfg.trackers[v]={};$('t_add_id').value='';saveTrackers().then(()=>renderAssoc(true))};
 $('t_add_id').addEventListener('keydown',e=>{if(e.key=='Enter')$('t_add').click()});
+
+// ---------- per-tracker processing (association list)
+const PROC_DEFAULTS={record:true,alt_source:'default',nmea_file:false,nmea_processed:false};
+const ALT_LABEL={gps:'GPS',"as-is":'Baro as-is',recompute:'Baro recomputed',disable:'GPS'};
+function altOptions(){const g=cfg?ALT_LABEL[cfg.barometer.mode]:'';return `<option value="default">Default (${g})</option><option value="gps">GPS</option><option value="as-is">Baro as-is</option><option value="recompute">Baro recomputed</option>`}
+function listed(id){return !!cfg.trackers[String(id)]}
+function procOf(id){const p=Object.assign({},PROC_DEFAULTS,(cfg.trackers[String(id)]||{}).processing||{});
+ if(!listed(id))p.record=(cfg.unlisted_trackers||'record')=='record';return p}
+function cleanProc(p){const q={};for(const k in p)if(p[k]!==PROC_DEFAULTS[k])q[k]=p[k];return q}
+function setProcessing(id,k,v){const e=Object.assign({},cfg.trackers[id]||{}),p=cleanProc(Object.assign({},(e.processing||{}),{[k]:v}));
+ if(Object.keys(p).length)e.processing=p;else delete e.processing;cfg.trackers[id]=e;return saveTrackers()}
+$('t_unlisted').onchange=async e=>{const v=e.target.value,r=await api('/api/config',{unlisted_trackers:v});if(r&&r.ok===false){alert(r.error);return}cfg.unlisted_trackers=v;renderAssoc(true)};
+$('ta_apply').onclick=()=>{const ids=Object.keys(cfg.trackers);if(!ids.length){alert('No trackers in the list yet - add them first');return}
+ if(!confirm('Apply these processing settings to all '+ids.length+' listed trackers?'))return;
+ const p=cleanProc({record:$('ta_rec').checked,alt_source:$('ta_alt').value,nmea_file:$('ta_nmea').checked,nmea_processed:$('ta_proc').checked});
+ for(const id of ids){const e=Object.assign({},cfg.trackers[id]);if(Object.keys(p).length)e.processing=Object.assign({},p);else delete e.processing;cfg.trackers[id]=e}
+ saveTrackers().then(()=>renderAssoc(true))};
+function renderIgnored(s){const ig=s.ignored||{},ids=Object.keys(ig).sort((a,b)=>a-b),el=$('t_ignored');
+ const key=ids.map(i=>i+':'+ig[i]).join(',');if(el.dataset.key===key)return;el.dataset.key=key;
+ el.innerHTML=ids.length?'Ignored IDs heard (not in the list): '+ids.map(i=>`<b>${esc(i)}</b> (${ig[i]}) <button class="addig" data-id="${esc(i)}">Add</button>`).join(' · '):'';
+ el.querySelectorAll('.addig').forEach(b=>b.onclick=()=>{const v=b.dataset.id;if(!cfg.trackers[v])cfg.trackers[v]={};saveTrackers().then(()=>renderAssoc(true))})}
 
 // ---------- tabs
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('tab-'+b.dataset.tab).classList.add('active');if(b.dataset.tab=='overview'&&map)setTimeout(()=>map.invalidateSize(),50);if(b.dataset.tab=='mission')setTimeout(()=>{if(mmap){mmap.invalidateSize();if(!mFitted&&state){const t=state.trackers.find(x=>x.lat!=null);if(t){mmap.setView([t.lat,t.lon],16);mFitted=true}}}},60);if(b.dataset.tab=='video')buildWall();});
@@ -348,6 +402,7 @@ function fillForm(){
   $('serialRow').style.display=cfg.connection.type=='serial'?'flex':'none';$('netRow').style.display=cfg.connection.type=='network'?'flex':'none';
   const cp=$('c_type_pick');cp.innerHTML='';cp.appendChild(symbolPicker(cfg.cot.type,saveDefaultSymbol,null));
   $('co_hosts').value=(cfg.cosmo.manual_hosts||[]).join(', ');
+  $('t_unlisted').value=cfg.unlisted_trackers||'record';$('ta_alt').innerHTML=altOptions();
   renderDest();renderNames();
   $('hcfg').textContent='config: '+cfgHere+'/sitgs.json';
 }
@@ -391,11 +446,53 @@ if(hasMap){map=L.map('map').setView([45.4,-75.7],5);
 const markers={},trails={};let fitted=false;
 $('btnFit').onclick=()=>{if(!hasMap)return;const ll=Object.values(markers).map(m=>m.getLatLng());if(ll.length)map.fitBounds(L.latLngBounds(ll).pad(0.3))};
 
+// ---------- live tracker board (left column) and Live data tab
+const CSV_COLS=['Measurement_DateTime','Measurement_ReceivedDateTime','GPS_FixValid','GPS_lat','GPS_lon','GPS_alt','GPS_HDOP','GPS_SOG','GPS_COG','Barometer_Pressure','Barometer_Temperature','Barometer_Altitude','Report_StationID','RF_RSSI'];
+let lbOpen=null;
+// green: fix and a report within 3 s (3x the 1 Hz TDMA rate); amber: no fix or late; red: older than the data-age tolerance
+function health(t,tol){if(!t)return['','registered, not heard yet'];const a=t.age_s;if(a==null)return['','no data yet'];
+ if(a>tol)return['r','no report for '+Math.round(a)+' s'];if(!t.fix_valid)return['a','no GPS fix'];if(a>3)return['a','late: '+a.toFixed(1)+' s'];return['g','ok']}
+function boardRows(s){const byId={};for(const t of s.trackers)byId[t.id]=t;
+ const ids=[...new Set([...s.trackers.map(t=>t.id),...Object.keys(cfg.trackers).map(Number).filter(n=>!isNaN(n))])].sort((a,b)=>a-b);
+ return ids.map(id=>({id,t:byId[id]||null,e:cfg.trackers[String(id)]||{}}))}
+function altText(t){const baro=t.alt_mode!='disable'&&t.baro_alt!=null,a=baro?t.baro_alt:t.gps_alt;return a==null?'':a.toFixed(1)+(baro?'b':'')}
+function renderBoard(s){if(!cfg)return;const tol=s.data_age_tolerance_s,rows=boardRows(s),cnt={g:0,a:0,r:0,'':0},tb=$('lboard').querySelector('tbody');let h='';
+ for(const {id,t,e} of rows){const [c,why]=health(t,tol);cnt[c]++;
+  h+=`<tr class="row${t?'':' pre'}" data-id="${id}" title="${esc(why)}"><td><span class="hdot ${c}"></span></td><td><b>${id}</b></td><td><span class="tgt">${esc(e.target||'')}</span></td>`+
+   (t?`<td>${t.age_s==null?'':t.age_s.toFixed(1)+'s'}</td><td>${t.fix_valid?'✓':'✗'}${t.nsat!=null?' '+t.nsat:''}</td><td>${altText(t)}</td><td><span class="bar sm"><i style="width:${rssiPct(t.rssi)}%"></i></span> ${f(t.rssi,0)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)}</td><td>${t.record?t.csv_rows:'<span title="not recorded">off</span>'}</td>`
+     :'<td colspan="6">not heard yet</td>')+'</tr>';
+  if(lbOpen==id)h+=`<tr class="detail"><td colspan="9">${boardDetail(t)}</td></tr>`}
+ tb.innerHTML=h;
+ tb.querySelectorAll('tr.row').forEach(r=>r.onclick=()=>{const id=+r.dataset.id;lbOpen=(lbOpen==id?null:id);renderBoard(state)});
+ const lg=s.logging||{},notlog=!lg.nmea&&!lg.csv,ign=Object.keys(s.ignored||{}).length;
+ $('lbsum').innerHTML=`${rows.length} · <span style="color:#1f8f36">${cnt.g} ok</span> · <span style="color:#a06c00">${cnt.a} late/no fix</span> · <span style="color:#c0392b">${cnt.r} stale</span>`+
+  (cnt['']?` · ${cnt['']} not heard`:'')+(ign?` · ${ign} ignored`:'')+' · '+(notlog?'<span class="notlog">NOT LOGGING</span>':`CSV ${lg.csv?'✓':'✗'} NMEA ${lg.nmea?'✓':'✗'}`)}
+function boardDetail(t){if(!t)return 'In the tracker list; nothing received yet.';
+ const p=procOf(t.id),fl=t.files||{};
+ const kv=t.last_row?CSV_COLS.map((c,i)=>`<b>${c}</b><span>${esc(t.last_row[i])}</span>`).join(''):'<b>—</b><span>no GPS fix yet, so nothing written to the CSV</span>';
+ return `<div class="small">Latest ${t.record?'row written to':'row (not recorded) for'} the split CSV:</div><div class="kv">${kv}</div>`+
+  `<div class="small" style="margin-top:4px">Record ${t.record?'on':'off'} · altitude ${ALT_LABEL[t.alt_mode]||t.alt_mode}${p.alt_source=='default'?' (default)':''} · ${t.csv_rows} CSV rows`+
+  [fl.csv,fl.nmea,fl.nmea_processed].filter(Boolean).map(x=>' · '+esc(x)).join('')+'</div>'}
+function hms(iso){return iso?iso.slice(11,23):''}
+function renderLive(s){if(!cfg)return;const tol=s.data_age_tolerance_s,rows=boardRows(s);
+ $('livegrid').querySelector('tbody').innerHTML=rows.map(({id,t,e})=>{
+  if(!t)return `<tr class="pre"><td><span class="hdot"></span></td><td><b>${id}</b></td><td>${esc(e.target||'')}</td><td>${esc(e.callsign||'')}</td><td colspan="20">registered, not heard yet</td></tr>`;
+  const [c,why]=health(t,tol),fl=t.files||{};
+  return `<tr title="${esc(why)}"><td><span class="hdot ${c}"></span></td><td><b>${id}</b></td><td>${esc(e.target||'')}</td><td>${esc(t.callsign||'')}</td><td class="mono">${hms(t.gps_time)}</td><td class="mono">${hms(t.rx_time)}</td><td>${t.fix_valid?'✓':'✗'}</td>`+
+   `<td class="mono">${f(t.lat,6)}</td><td class="mono">${f(t.lon,6)}</td><td>${f(t.gps_alt,1)}</td><td>${f(t.hdop,1)}</td><td>${f(t.sog,2)}</td><td>${f(t.cog,1)}</td><td>${t.pressure_pa==null?'':(t.pressure_pa/1e5).toFixed(5)}</td><td>${f(t.temp_c,0)}</td>`+
+   `<td>${t.alt_mode=='disable'?'':f(t.baro_alt,1)}</td><td><span class="bar sm"><i style="width:${rssiPct(t.rssi)}%"></i></span> ${f(t.rssi,0)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)+' V'}</td><td>${t.nsat??''}</td><td>${f(t.age_s,1)}</td>`+
+   `<td>${ALT_LABEL[t.alt_mode]||t.alt_mode}</td><td>${t.record?'✓':'off'}</td><td>${t.csv_rows}</td><td class="small">${[fl.nmea?'raw':'',fl.nmea_processed?'processed':''].filter(Boolean).join(' + ')}</td></tr>`}).join('');
+ const lg=s.logging||{};$('livesum').innerHTML=`${rows.length} trackers · data-age tolerance ${tol} s · `+(!lg.nmea&&!lg.csv?'<span class="notlog">NOT LOGGING</span>':`split CSV ${lg.csv?'on':'off'} · NMEA log ${lg.nmea?'on':'off'} · ${s.csv_rows} CSV rows this session`)}
+function needTrails(){return ['overview','mission'].some(t=>$('tab-'+t).classList.contains('active'))}
+
 // ---------- plots
 const COLORS=['#0e7c86','#c0392b','#2b6cb0','#c98a12','#6b3fa0','#2b9a48','#d35400','#7f8c8d','#16a085','#8e44ad'];
 function colorFor(id){const s=String(id);let h=0;if(/^\d+$/.test(s)){const i=+s;h=(i%1000)*7+Math.floor(i/1000)*3}else for(const ch of s)h=(h*31+ch.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
-function sizeCanvas(c){const r=c.getBoundingClientRect();if(c.width!=Math.floor(r.width*devicePixelRatio)){c.width=Math.floor(r.width*devicePixelRatio);c.height=Math.floor(c.getAttribute('height')*devicePixelRatio)}return c.getContext('2d')}
-function drawTimeline(s){const c=$('cvTimeline'),g=sizeCanvas(c),W=c.width,H=c.height,ids=Object.keys(s.timeline).sort((a,b)=>a-b),win=s.timeline_window_s;g.clearRect(0,0,W,H);
+function sizeCanvas(c){if(!c.dataset.h)c.dataset.h=c.getAttribute('height');const r=c.getBoundingClientRect(),w=Math.floor(r.width*devicePixelRatio),h=Math.floor(+c.dataset.h*devicePixelRatio);
+ if(c.width!=w||c.height!=h){c.width=w;c.height=h;c.style.height=c.dataset.h+'px'}return c.getContext('2d')}
+function drawTimeline(s){const c=$('cvTimeline'),ids=Object.keys(s.timeline).sort((a,b)=>a-b),want=Math.max(90,ids.length*9+16);
+ c.dataset.h=want;
+ const g=sizeCanvas(c),W=c.width,H=c.height,win=s.timeline_window_s;g.clearRect(0,0,W,H);
  const lab=60*devicePixelRatio,rowH=Math.max(8,(H-14*devicePixelRatio)/Math.max(1,ids.length));g.font=`${9*devicePixelRatio}px Menlo,monospace`;
  ids.forEach((id,r)=>{const y=r*rowH+2;g.fillStyle=colorFor(id);g.fillText(String(id).slice(0,9),2,y+rowH*0.8);for(const [t] of s.timeline[id]){const x=lab+(t/win)*(W-lab-4);g.fillRect(x,y,1.5*devicePixelRatio,rowH-3)}});
  g.fillStyle='#9aa8b4';for(let k=0;k<=4;k++){const x=lab+(k/4)*(W-lab-4);g.fillRect(x,H-3*devicePixelRatio,1,3*devicePixelRatio)}}
@@ -409,13 +506,14 @@ function f(v,d){return v==null?'':(typeof v=='number'?v.toFixed(d):v)}
 function rssiPct(r){return r==null?0:Math.max(0,Math.min(100,(r+120)/70*100))}
 let ticking=false;
 function tipFor(t){const custom=t.callsign&&t.callsign!=uidOf(t.id);return esc((custom?t.callsign+' (':'')+idLabel(t.id)+(custom?')':''))}
-async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api/state',null,5000);state=s;
+async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api/state'+(needTrails()?'':'?trails=0'),null,5000);state=s;
  $('up').textContent=Math.round(s.uptime_s);$('lines').textContent=s.lines;$('reports').textContent=s.reports;$('bad').textContent=s.bad_sentences;$('ghosts').textContent=s.ghosts;$('bytes').textContent=s.bytes;
  $('connStatus').textContent=s.conn_status;$('ledConn').className='led '+(s.connected?'on':(s.conn_status.startsWith('error')||s.conn_status.startsWith('no ')?'warn':'off'));
  $('btnConnect').textContent=s.connected?'Disconnect':'Connect';$('btnConnect').classList.toggle('on',s.connected);
  const ra=$('raw');const atBottom=ra.scrollHeight-ra.scrollTop-ra.clientHeight<30;ra.value=s.raw.join('\n');if(atBottom)ra.scrollTop=ra.scrollHeight;
  const tol=s.data_age_tolerance_s;
  $('grid').querySelector('tbody').innerHTML=s.trackers.map(t=>{const cls=t.age_s==null?'dead':(t.age_s>tol?'stale':'');const ii=idInfo(t.id);return `<tr class="${cls}"><td><b>${t.id}</b></td><td>${ii.mhz?ii.mhz+' MHz':''}</td><td>${ii.slot}</td><td class="mono">${f(t.rssi,0)}</td><td><span class="bar"><i style="width:${rssiPct(t.rssi)}%"></i></span></td><td>${t.pressure_pa==null?'':(t.pressure_pa/1e5).toFixed(5)}</td><td>${f(t.temp_c,0)}</td><td>${f(t.gps_alt,1)}</td><td>${f(t.baro_alt,1)}</td><td>${f(t.age_s,1)}</td><td>${t.batt_mv==null?'':(t.batt_mv/1000).toFixed(2)+' V'}</td><td><span class="led ${t.fix_valid?'on':'off'}"></span></td><td>${t.nsat??''}</td></tr>`}).join('');
+ renderBoard(s);renderIgnored(s);if($('tab-live').classList.contains('active'))renderLive(s);
  $('sealevel').textContent=s.sea_level_bar;const g=s.trackers.find(t=>t.geoid_sep!=null);$('geoid_gps').value=g?(-g.geoid_sep).toFixed(1):'';
  $('cotsent').textContent=s.cot_sent;$('coterr').textContent=s.cot_errors;$('cotstatus').textContent=s.cot_status.join('\n');
  $('nmeafile').textContent=s.nmea_path||'(not logging)';$('nmealines').textContent=s.nmea_lines;$('ledNmea').className='led '+(s.nmea_path?'on':'off');
@@ -427,7 +525,7 @@ async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api
   if(!m){m=markers[t.id]=(sy?L.marker(ll,{icon:symIcon(sy)}):L.circleMarker(ll,{radius:7,color:col,fillColor:col,fillOpacity:.9})).addTo(map)
     .bindTooltip(tipFor(t),{permanent:true,direction:'right',offset:sy?[sy.w-sy.ax,0]:[0,0]});m._symKey=sy?et:''}
   else{m.setLatLng(ll);m.setTooltipContent(tipFor(t))}
-  if(!trails[t.id])trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map);else trails[t.id].setLatLngs(s.trails[t.id]||[]);
+  if(!trails[t.id])trails[t.id]=L.polyline(s.trails[t.id]||[ll],{color:col,weight:2,opacity:.7}).addTo(map);else if(s.trails[t.id])trails[t.id].setLatLngs(s.trails[t.id]);
   const old=t.age_s>tol;if(m.setOpacity)m.setOpacity(old?.4:1);else m.setStyle({opacity:old?.4:1,fillOpacity:old?.3:.9});
   if(!fitted){map.setView(ll,15);fitted=true}}
  renderDrones(s);

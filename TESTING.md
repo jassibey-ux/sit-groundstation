@@ -51,6 +51,24 @@ Run with `--host` open: the server already listens on all interfaces; just
 browse to `http://<this machine's IP>:8090` from the other device. Allow the
 app through the OS firewall if prompted.
 
+## Seeing that everything works (no CSV needed)
+
+The **Live trackers** board on the left shows every tracker at a glance:
+green = fix and heard in the last 3 s, amber = no fix or late, red = nothing
+for longer than the data-age tolerance, grey = in the list but not heard yet.
+The CSV column counts rows written for each tracker; click a tracker to see the
+exact latest row written to its CSV. **NOT LOGGING** in red means logging is off.
+The **Live data** tab shows all CSV fields for all trackers.
+
+## Per-tracker processing (Trackers tab)
+
+For each tracker: **Record** (off keeps it on screen and in CoT but out of the
+files), **Altitude** (GPS, barometric as-is or barometric recomputed, or the
+default from the Barometric tab), **NMEA file** (its own raw .nmea file) and
+**Processed NMEA** (GGA/RMC with the chosen altitude). "Trackers not in this
+list" decides what happens to IDs you did not enter. The combined NMEA log
+always keeps everything received. The app opens in your browser at start.
+
 ## Console status line
 
 The console window shows one live line, updated every second:

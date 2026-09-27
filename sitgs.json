@@ -60,8 +60,10 @@
   },
   "web": {
     "port": 8090,
+    "open_browser": true,
     "enabled": true
   },
+  "unlisted_trackers": "record",
   "data_age_tolerance_s": 30,
   "tdma_slot_ms": 50,
   "filter": {
