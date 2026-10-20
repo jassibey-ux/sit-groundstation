@@ -103,8 +103,9 @@ Trackers tab.
 ## Drones tab — Cosmostreamer boxes
 
 The ground station is also a Cosmostreamer client, using the box's native UDP protocol
-(port 5252, the one CosmoViewerNG uses). Boxes on the same network are discovered by
-broadcast; others can be listed under **Cosmostreamer boxes** in the connection panel
+(port 5252, the one CosmoViewerNG uses; checked against box firmware 0.24.11). Boxes on the
+same network are discovered by broadcast (to 255.255.255.255 and to every network
+interface's own broadcast address, so a box on a second interface is found too); others can be listed under **Cosmostreamer boxes** in the connection panel
 (`ip` or `ip:port`), and boxes that publish through an MQTT broker (e.g. over a VPN) can
 be read by enabling MQTT there.
 
@@ -119,7 +120,28 @@ box's RTSP link to the CoT (ATAK/WinTAK open video from the icon) and controls w
 unpaired boxes are sent as `DJI.<name>`.
 
 Altitude: a box reports height above take-off; the paired tracker's GPS altitude while
-the drone is on the ground supplies the take-off MSL so the CoT carries a proper HAE.
+the drone is on the ground supplies the take-off MSL so the CoT carries a proper HAE. An
+unpaired drone's CoT carries an unknown altitude (hae 9999999) rather than a wrong one.
+
+Telemetry is dropped the way the box firmware drops it: when the box reports the drone
+disconnected (`camera_detected` not 1) or 2 s after its last binary telemetry, so a lost
+link never leaves a stale position that looks live. Video needs **RTSP server** switched
+on in the box's own web page (`http://<box>/`); it ships switched off.
+
+### Bringing up a real box
+
+    sitgs --cosmo-probe --probe-host 192.168.50.1      # (python3 sitgs.py ... from source)
+
+finds boxes (broadcast, every interface, and the given hosts), prints exactly what each
+sends — app type, licence byte, name, firmware, every telemetry key and binary layout,
+any packet it does not recognise — and checks the box's web page, `waypoints.php` upload
+and RTSP port. On the box's own Wi-Fi the box is 192.168.50.1. A capture and a JSON
+report are written to `logs/cosmo/`. In the app, the Drones tab's **Raw telemetry** shows
+the text packets exactly as received and **Diagnostics** counts every packet (including
+ones that were dropped and why) and records a packet capture (`--cosmo-capture`, or the
+*Capture packets* button). A capture can be played back as a box:
+`python3 cosmo_sim.py --replay logs/cosmo/<file>.jsonl`; captures placed in
+`tests/data/cosmo_*.jsonl` are replayed by the test suite.
 
 ### Testing without a box
 
@@ -127,7 +149,8 @@ the drone is on the ground supplies the take-off MSL so the CoT carries a proper
 
 simulates a DJI Fly box: add `127.0.0.1:5253` to the manual host list, pair it with
 your tracker, and watch Source flip DJI → LoRa → DJI when the simulated link drops at
-40 s. Real boxes use port 5252 and need no manual entry.
+40 s. Real boxes use port 5252 and need no manual entry. `--no-drone` simulates a box
+with nothing attached.
 
 Files: `cosmo.py` (client, MQTT reader), `cosmo_sim.py` (simulator).
 
@@ -137,13 +160,15 @@ Click the map to add waypoints, drag to move, set per-waypoint height/speed or u
 mission defaults (speed, height above take-off, RTH height, finish action, heading mode,
 drone type). **Save** writes `logs/missions/<name>.json` and a DJI **.kmz** in WPML
 format (the file DJI Fly/Pilot and Cosmostreamer use). **Upload to box** sends the KMZ to
-the selected box through its own web upload (`waypoints.php`, documented in the firmware).
+the selected box through its own web upload (`waypoints.php` in the box firmware).
 
-The *Fly it* buttons send the Cosmostreamer control strings (take/release control, start,
-pause, resume, stop, RTH, land). Upload and RTH/land/control use commands found in the
-firmware; the mission start/pause/stop strings are the PRO-licence commands and are
-**unverified until tried on a real box** — they live in `sitgs.json → cosmo.mission_cmds`
-so they can be corrected without touching code. Every command asks for confirmation.
+The *Fly it* buttons send Cosmostreamer control strings. Take/release control, RTH and
+land use the exact strings of the box's own web page (firmware 0.24.11) but have not yet
+been tried on a drone. **Start / pause / resume / stop are disabled**: their strings are
+not in the box firmware — they were guesses. Once the real strings are captured (e.g. from
+what the box's own drone-control page sends), put them in `sitgs.json → cosmo.mission_cmds`
+and set `cosmo.mission_cmds_verified` to true. Until then start missions from the box or
+DJI Fly. Every command asks for confirmation.
 The pilot's controller always overrides software control. Autonomous flight of several
 aircraft is a regulatory matter (SFOC / Part 107 waiver) before it is a software one.
 

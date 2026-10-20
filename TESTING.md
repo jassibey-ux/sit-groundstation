@@ -109,13 +109,23 @@ ATAK/WinTAK devices and tell us if any symbol looks wrong.
    (a stuck serial read is cancelled and reconnected automatically after
    ~10 s).
 
+## Cosmostreamer box
+
+Join the box's Wi-Fi (the box is then 192.168.50.1) and run
+`sitgs --cosmo-probe --probe-host 192.168.50.1`. It prints what the box sends and
+whether its web page, waypoint upload and video (RTSP) port answer. Send us the
+report and capture from `logs/cosmo/`. Switch **RTSP server** on in the box's
+web page for video.
+
 ## Known limitations of this test build
 
 - Unsigned binaries (SmartScreen/Gatekeeper warnings above are expected).
 - Mac build is Apple Silicon; on an Intel Mac run from source instead
   (`python3 sitgs.py` — needs only stock Python 3, no pip installs).
-- Cosmostreamer mission start/pause/stop commands are unverified on real
-  hardware (PRO-licence strings recovered from firmware).
+- Cosmostreamer: tested against the box firmware's own protocol code and a
+  simulator, not yet against a real box with a drone. Mission start/pause/
+  resume/stop are disabled (their command strings are not known); RTH, land
+  and take/release control use the box web page's strings but are untried.
 
 Please note anything broken or different from the LabVIEW client, with the
 tab name and what you did.

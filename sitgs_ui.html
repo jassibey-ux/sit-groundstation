@@ -199,7 +199,15 @@ tr.pre td input,tr.pre td select{font-style:normal}
         <th>Box</th><th>IP</th><th>Type</th><th>Lic</th><th>Link</th><th>Drone</th><th>Tracker</th><th>Symbol</th><th>Source</th><th>Lat</th><th>Lng</th><th>Alt rel</th><th>Sats</th><th>Yaw</th><th>Speed</th><th>Batt</th><th>RC</th><th>Mode</th><th>Flying</th><th>RTH</th><th>Age</th><th>Video</th>
       </tr></thead><tbody></tbody></table></div>
       <div class="small">Pair each box with the puck mounted on that drone. A paired drone is one CoT entity (the tracker's uid and callsign): position comes from the DJI link while it is alive and falls back to the 915 MHz tracker when it is not — the <b>Source</b> column shows which. Boxes appear here by themselves when they are on the same network (discovery on) or when listed under Cosmostreamer boxes in the connection panel.</div>
-      <div class="box"><h4>Raw telemetry (last text block per box)</h4><div class="status" id="draw" style="height:140px"></div></div>
+      <div class="small">Video: switch <b>RTSP server</b> on in the box's own web page (http://&lt;box&gt;/, off by default) before using the rtsp link or the Video tab.</div>
+      <div class="box"><h4>Raw telemetry <span class="small" style="text-transform:none;letter-spacing:0">(last text packets exactly as received, and every key the box has sent)</span></h4>
+        <select id="dsel" style="margin-bottom:4px"></select><div class="status" id="draw" style="height:180px"></div></div>
+      <div class="box"><h4>Diagnostics</h4>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+          <button id="dcap" class="toggle">Capture packets</button><a href="/api/cosmo/capture" id="dcapdl" class="mono">download capture</a>
+          <span class="small" id="dcapst"></span></div>
+        <div class="status" id="ddiag" style="height:150px"></div>
+        <div class="small">Capture records every Cosmostreamer packet to <span class="mono">logs/cosmo/</span>. Send the file with any bug report about a box.</div></div>
     </div>
 
     <!-- Mission planner -->
@@ -220,8 +228,8 @@ tr.pre td input,tr.pre td select{font-style:normal}
           <table class="grid" id="m_wps"><thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Height</th><th>Speed</th><th></th></tr></thead><tbody></tbody></table></div>
         <div class="box"><h4>Fly it</h4>
           <div class="field"><span>Box</span><select id="m_box"></select></div>
-          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="m_upload">Upload to box</button><button data-act="take_control" class="dcmd">Take control</button><button data-act="start" class="dcmd primary">Start mission</button><button data-act="pause" class="dcmd">Pause</button><button data-act="resume" class="dcmd">Resume</button><button data-act="stop" class="dcmd">Stop</button><button data-act="rth" class="dcmd" style="color:var(--bad)">RTH</button><button data-act="land" class="dcmd" style="color:var(--bad)">Land</button><button data-act="release_control" class="dcmd">Release control</button></div>
-          <div class="small" id="m_warn" style="margin-top:6px;color:var(--warn)">Upload uses the box's own web upload (documented). The start/pause/stop command strings are Cosmostreamer PRO-licence commands that have <b>not been verified on hardware yet</b> — edit them in sitgs.json → cosmo.mission_cmds once confirmed, and every command asks before it is sent.</div>
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button id="m_upload">Upload to box</button><button data-act="take_control" class="dcmd">Take control</button><button data-act="start" class="dcmd primary unv">Start mission</button><button data-act="pause" class="dcmd unv">Pause</button><button data-act="resume" class="dcmd unv">Resume</button><button data-act="stop" class="dcmd unv">Stop</button><button data-act="rth" class="dcmd" style="color:var(--bad)">RTH</button><button data-act="land" class="dcmd" style="color:var(--bad)">Land</button><button data-act="release_control" class="dcmd">Release control</button></div>
+          <div class="small" id="m_warn" style="margin-top:6px;color:var(--warn)">Upload uses the box's own <span class="mono">waypoints.php</span> upload (from the box firmware). Take/release control, RTH and Land use the command strings of the box's own web page, but have not been tried on a drone yet. <b>Start / Pause / Resume / Stop are disabled:</b> their command strings are not in the box firmware (they were guesses), so start the mission from the box or DJI Fly. Every command asks before it is sent.</div>
           <div class="status" id="m_log" style="height:80px;margin-top:6px"></div></div>
       </div>
       <div id="mmap" style="min-height:420px;border:1px solid var(--line);border-radius:3px"></div>
@@ -402,7 +410,7 @@ function fillForm(){
   $('serialRow').style.display=cfg.connection.type=='serial'?'flex':'none';$('netRow').style.display=cfg.connection.type=='network'?'flex':'none';
   const cp=$('c_type_pick');cp.innerHTML='';cp.appendChild(symbolPicker(cfg.cot.type,saveDefaultSymbol,null));
   $('co_hosts').value=(cfg.cosmo.manual_hosts||[]).join(', ');
-  $('t_unlisted').value=cfg.unlisted_trackers||'record';$('ta_alt').innerHTML=altOptions();
+  $('t_unlisted').value=cfg.unlisted_trackers||'record';applyMissionGuard();$('ta_alt').innerHTML=altOptions();
   renderDest();renderNames();
   $('hcfg').textContent='config: '+cfgHere+'/sitgs.json';
 }
@@ -445,6 +453,26 @@ if(hasMap){map=L.map('map').setView([45.4,-75.7],5);
 }else{$('map').textContent='map library not loaded';}
 const markers={},trails={};let fitted=false;
 $('btnFit').onclick=()=>{if(!hasMap)return;const ll=Object.values(markers).map(m=>m.getLatLng());if(ll.length)map.fitBounds(L.latLngBounds(ll).pad(0.3))};
+
+
+// ---------- Cosmostreamer diagnostics (Drones tab)
+let diagBusy=false;
+async function refreshDiag(){if(diagBusy)return;diagBusy=true;try{const d=await api('/api/cosmo/diag',null,5000);
+ const sel=$('dsel'),cur=sel.value;sel.innerHTML=d.boxes.map(b=>`<option value="${esc(b.key)}">${esc(b.key)}</option>`).join('')||'<option value="">no boxes yet</option>';if(cur)sel.value=cur;
+ const b=d.boxes.find(x=>x.key==sel.value)||d.boxes[0];
+ $('draw').textContent=b?('last text packets:\n'+(b.raw_text.length?b.raw_text.map(t=>'  '+t).join('\n'):'  (none - normal with no drone connected)')+
+   '\n\nall keys received ('+Object.keys(b.keys).length+'):\n'+Object.entries(b.keys).map(([k,v])=>`  ${k.padEnd(22)} ${v}${k in b.values_now?'':'   (cleared)'}`).join('\n')+
+   '\n\nbinary: '+JSON.stringify(b.binary)):'No box has answered yet. On the box Wi-Fi the box is 192.168.50.1 - add it under Cosmostreamer boxes > Manual hosts if it is not found.';
+ const lines=[`packets ${d.packets} · errors ${d.errors} · dropped ${JSON.stringify(d.drops)}`,`discovery to: ${d.broadcasts.join(', ')}`];
+ for(const x of d.boxes)lines.push(`${x.key}: `+Object.entries(x.counts).map(([k,v])=>k+' '+v).join(', '));
+ if(d.unknown.length){lines.push('unrecognised packets (latest last):');for(const u of d.unknown.slice(-8))lines.push(`  ${u.peer} ${u.hex}`)}
+ $('ddiag').textContent=lines.join('\n');
+ $('dcap').classList.toggle('on',d.capture.on);$('dcap').textContent=d.capture.on?'Stop capture':'Capture packets';
+ $('dcapst').textContent=d.capture.on?`${d.capture.datagrams} datagrams → ${d.capture.path}`:'';
+}catch(e){}finally{diagBusy=false}}
+$('dsel').onchange=refreshDiag;
+$('dcap').onclick=async()=>{const on=!$('dcap').classList.contains('on');await api('/api/cosmo/capture',{on});setTimeout(refreshDiag,1500)};
+function applyMissionGuard(){const ok=!!(cfg&&cfg.cosmo.mission_cmds_verified);document.querySelectorAll('.dcmd.unv').forEach(b=>{b.disabled=!ok;b.title=ok?'':'command string not confirmed - see the note below'})}
 
 // ---------- live tracker board (left column) and Live data tab
 const CSV_COLS=['Measurement_DateTime','Measurement_ReceivedDateTime','GPS_FixValid','GPS_lat','GPS_lon','GPS_alt','GPS_HDOP','GPS_SOG','GPS_COG','Barometer_Pressure','Barometer_Temperature','Barometer_Altitude','Report_StationID','RF_RSSI'];
@@ -533,18 +561,18 @@ async function tick(){if(ticking)return;ticking=true;try{const s=await api('/api
 }catch(e){$('connStatus').textContent='no connection to sitgs backend';$('ledConn').className='led warn'}finally{ticking=false}}
 const dmarkers={},dtrails={},dlinks={};
 function renderDrones(s){const c=s.cosmo||{boxes:[]};$('nboxes').textContent=c.boxes.filter(b=>b.online).length;$('dcot').textContent=c.drone_cot_sent||0;$('dcot2').textContent=c.drone_cot_sent||0;
- $('co_status').textContent=`packets ${c.packets||0}`+(c.mqtt?`  · mqtt: ${c.mqtt}`:'');
+ $('co_status').textContent=`packets ${c.packets||0}`+(c.dropped?` · dropped ${c.dropped}`:'')+(c.errors?` · errors ${c.errors}`:'')+(c.capturing?' · capturing':'')+(c.mqtt?`  · mqtt: ${c.mqtt}`:'');
  const tids=[...new Set([...(s.trackers.map(t=>t.id)),...Object.values(c.pairs||{}).filter(Boolean).map(Number)])].sort((a,b)=>a-b);
  const tb=$('dgrid').querySelector('tbody');const focused=document.activeElement&&tb.contains(document.activeElement);
  if(!focused){tb.innerHTML=c.boxes.map(b=>{const opts='<option value="">— none —</option>'+tids.map(t=>`<option value="${t}" ${String(b.tracker_id)==String(t)?'selected':''}>${idLabel(t)}</option>`).join('');
   const srcCls=b.source=='DJI'?'ok':(b.source=='LoRa'?'stale':'');const cls=b.online?'':'dead';
-  return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td>${b.license==null?'':(b.license?'✓':'✗')}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="bsym"></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
+  return `<tr class="${cls}" data-key="${b.key}"><td><b>${b.name||b.key}</b></td><td class="mono">${b.transport=='udp'?b.host:'mqtt'}</td><td>${b.app_type_str||''}</td><td title="licence byte from the box (meaning not documented)">${b.license==null?'':b.license}</td><td><span class="led ${b.connected?'on':'off'}"></span></td><td>${b.model||''}</td><td><select class="pair">${opts}</select></td><td class="bsym"></td><td class="${srcCls}"><b>${b.source}</b></td><td>${f(b.lat,6)}</td><td>${f(b.lng,6)}</td><td>${f(b.alt_rel,1)}</td><td>${b.sats??''}</td><td>${f(b.yaw,0)}</td><td>${f(b.hspeed,1)}</td><td>${b.battery??''}${b.battery!=null?'%':''}</td><td>${b.rc_battery??''}</td><td>${b.flight_mode||''}</td><td>${b.in_flight=='1'?'✈':''}</td><td>${b.rth=='1'?'RTH':''}</td><td>${f(b.age_s,1)}</td><td><a href="${b.video_url}" class="mono">rtsp</a></td></tr>`}).join('');
   tb.querySelectorAll('tr').forEach(row=>{const key=row.dataset.key,b=c.boxes.find(x=>x.key==key),cell=row.querySelector('.bsym');if(!b||!cell)return;
    if(b.tracker_id){cell.innerHTML='<span class="small">tracker '+esc(b.tracker_id)+'\'s</span>';return}
    cell.appendChild(symbolPicker((cfg.cosmo.box_types||{})[key]||'',v=>saveBoxType(key,v),'Default'))});
   tb.querySelectorAll('select.pair').forEach(el=>el.onchange=()=>{const key=el.closest('tr').dataset.key;cfg.cosmo.pairs=cfg.cosmo.pairs||{};if(el.value)cfg.cosmo.pairs[key]=String(el.value);else delete cfg.cosmo.pairs[key];api('/api/config',{cosmo:{pairs:cfg.cosmo.pairs}})});}
  const mb=$('m_box');if(!(document.activeElement===mb)){const cur=mb.value;mb.innerHTML=c.boxes.filter(b=>b.transport=='udp').map(b=>`<option value="${b.key}">${b.name||b.key} (${b.host})</option>`).join('');if(cur)mb.value=cur}
- $('draw').textContent=c.boxes.map(b=>`${b.name||b.key}: connected=${b.connected} fix=${b.fix} lat=${b.lat} lng=${b.lng} alt=${b.alt_rel} sats=${b.sats} yaw=${b.yaw} hspeed=${b.hspeed} batt=${b.battery} mode=${b.flight_mode} in_flight=${b.in_flight} rth=${b.rth} model=${b.model} sn=${b.sn} takeoff_msl=${b.takeoff_msl}`).join('\n');
+ if($('tab-drones').classList.contains('active'))refreshDiag();
  if(!hasMap)return;
  for(const b of c.boxes){if(b.lat==null||!b.fix)continue;const ll=[b.lat,b.lng],col=colorFor(b.tracker_id||b.name);
   const bt=b.tracker_id?effType(b.tracker_id):(((cfg.cosmo.box_types||{})[b.key])||cfg.cot.type),bs=symbolFor(bt,22);

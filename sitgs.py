@@ -19,7 +19,8 @@ try:
     import serial, serial.tools.list_ports
 except ImportError:
     serial = None
-from cosmo import CosmoClient, TELEMETRY_TYPES
+import cosmo as cosmo_mod
+from cosmo import CosmoClient
 import mission as mission_mod
 
 DEFAULT_CONFIG = {
@@ -44,7 +45,7 @@ DEFAULT_CONFIG = {
     "filter": {"receiver_address": 111, "require_payload": True},
     "cosmo": {"enabled": True, "discovery": True, "manual_hosts": [],
               "mqtt": {"enabled": False, "host": "127.0.0.1", "port": 1883, "username": "", "password": ""},
-              "pairs": {}, "box_types": {}, "video_in_cot": True, "cot_unpaired": True, "unpaired_uid_prefix": "DJI.", "dji_stale_s": 2.5,
+              "pairs": {}, "box_types": {}, "capture": False, "video_in_cot": True, "cot_unpaired": True, "unpaired_uid_prefix": "DJI.", "dji_stale_s": 2.5,
               "mission_cmds": {"start": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"start\",\"value2\":\"%NAME%.kmz\"}",
                                "pause": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"pause\"}",
                                "resume": "!{\"cmd\":\"drone\",\"param\":\"mission\",\"value\":\"resume\"}",
@@ -72,6 +73,8 @@ SYMBOL_TYPES = [("Air (generic)", "A"), ("Drone / UAV - rotary wing", "A-M-H-Q")
                 ("Aircraft - military fixed wing", "A-M-F"), ("Ground (generic)", "G"), ("Ground unit", "G-U"),
                 ("Ground vehicle", "G-E-V"), ("Dismounted troops", "G-U-C-I"), ("Sensor / equipment", "G-E-S"),
                 ("Sea surface", "S")]
+# not found in firmware 0.24.11 (guesses); the RTH / land / control strings are the box web UI's own
+UNVERIFIED_MISSION_CMDS = ("start", "pause", "resume", "stop")
 COT_TYPE_RE = re.compile(r"^[a-z](-[A-Za-z0-9]+)+$")
 
 # Per-tracker processing (association list, cfg.trackers[id]["processing"]); absent keys take these values.
@@ -248,12 +251,16 @@ def cot_event_dji(box, cfg, now, tracker=None, geoid_default=None):
         typ = co.get("box_types", {}).get(box.key) or c["type"]
         geoid = float(c["geoid_height_m"])
     alt_rel = box.alt_rel() or 0.0
-    msl = (box.takeoff_msl if box.takeoff_msl is not None else 0.0) + alt_rel
-    remarks = "dji=%s model=%s sats=%s batt=%s%% mode=%s alt_rel=%.0f src=DJI" % (box.name, box.values.get("camera_model"), box.values.get("gps_sat_count"),
-                                                                                   box.values.get("battery_level"), box.values.get("flight_mode"), alt_rel)
+    # the box reports height above take-off only; without a take-off MSL (from a paired tracker) the
+    # absolute altitude is unknown, which CoT expresses as hae 9999999
+    known = box.takeoff_msl is not None
+    hae = box.takeoff_msl + alt_rel + geoid if known else 9999999.0
+    remarks = "dji=%s model=%s sats=%s batt=%s%% mode=%s alt_rel=%.0f%s src=DJI" % (box.name, box.values.get("camera_model"), box.values.get("gps_sat_count"),
+                                                                                     box.values.get("battery_level"), box.values.get("flight_mode"), alt_rel,
+                                                                                     "" if known else " alt=unknown(no take-off MSL)")
     if tcfg.get("target"): remarks = "target=%s %s" % (tcfg["target"], remarks)
     video = (box.to_dict()["video_url"], box.name or box.key) if (co.get("video_in_cot", True) and box.transport == "udp") else None
-    return cot_xml(uid, typ, callsign, box.lat(), box.lng(), msl + geoid, 3.0, box.hspeed(), box.yaw(), "GPS", remarks,
+    return cot_xml(uid, typ, callsign, box.lat(), box.lng(), hae, 3.0, box.hspeed(), box.yaw(), "GPS" if known else "???", remarks,
                    c["stale_s"], now, c["include_flow_tag"], video)
 
 class CotSender:
@@ -309,7 +316,10 @@ class GroundStation:
         self.reports = 0; self.ghosts = 0; self.sea_level_pa = float(cfg["barometer"]["ref_pressure_bar"]) * 1e5
         self.replay = None
         self.apply_logging()
-        self.cosmo = CosmoClient(lambda: self.cfg["cosmo"], self.dbg); self.cosmo.start()
+        self.force_capture = False
+        self.cosmo = CosmoClient(lambda: dict(self.cfg["cosmo"], capture=True) if self.force_capture else self.cfg["cosmo"], self.dbg,
+                                 capture_path=lambda: os.path.join(DATA_DIR, "logs", "cosmo", "%s_cosmo.jsonl" % dt.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")))
+        self.cosmo.start()
         self.missions = mission_mod.MissionStore(os.path.join(DATA_DIR, "logs", "missions"))
         self.drone_cot_sent = 0
         self.kml_thread = threading.Thread(target=self.kml_loop, daemon=True); self.kml_thread.start()
@@ -906,6 +916,15 @@ def make_handler(gs, page):
             elif p == "/api/config": self._send(200, "application/json", json.dumps({"config": gs.cfg, "cot_types": COT_TYPES, "symbol_types": SYMBOL_TYPES,
                                                                                                 "symbol_affiliations": SYMBOL_AFFILIATIONS, "here": DATA_DIR}))
             elif p == "/api/ports": self._send(200, "application/json", json.dumps({"ports": list_ports(), "auto": find_port(probe=False)}))
+            elif p == "/api/cosmo/diag": self._send(200, "application/json", json.dumps(gs.cosmo.diag()))
+            elif p == "/api/cosmo/capture":
+                path = gs.cosmo.capture.path if gs.cosmo.capture else gs.cosmo.last_capture
+                if path and os.path.isfile(path):
+                    with open(path, "rb") as f: data = f.read()
+                    self.send_response(200); self.send_header("Content-Type", "application/x-ndjson")
+                    self.send_header("Content-Disposition", 'attachment; filename="%s"' % os.path.basename(path))
+                    self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+                else: self._send(404, "text/plain", "no capture yet - switch capture on in the Drones tab")
             elif p == "/api/missions": self._send(200, "application/json", json.dumps({"missions": gs.missions.list(), "drone_enums": mission_mod.DRONE_ENUMS, "finish_actions": mission_mod.FINISH_ACTIONS}))
             elif p.startswith("/missions/") and p.endswith(".kmz"):
                 m = gs.missions.get(p[10:-4])
@@ -950,10 +969,16 @@ def make_handler(gs, page):
                     gs.dbg("mission %s uploaded to %s: %s" % (m["name"], box.name, res)); self._send(200, "application/json", json.dumps({"ok": res == "ok", "result": res}))
                 elif p == "/api/mission/cmd":
                     box = gs.cosmo.box(body["box_key"]); act = body["action"]; cmds = gs.cfg["cosmo"]["mission_cmds"]
+                    if act in UNVERIFIED_MISSION_CMDS and not gs.cfg["cosmo"].get("mission_cmds_verified"):
+                        raise ValueError("'%s' is not available: the mission start/pause/resume/stop command strings are guesses, not found in the box firmware. "
+                                         "Start missions from the box or DJI Fly; set cosmo.mission_cmds_verified once the real strings are confirmed." % act)
                     if not box or act not in cmds: raise ValueError("unknown box or action")
                     cmd = cmds[act].replace("%NAME%", mission_mod.safe_name(body.get("name", "")))
                     gs.cosmo.send_text_command(box.key, cmd); gs.dbg("sent to %s: %s" % (box.name, cmd)); gs.cot_log("drone cmd -> %s: %s" % (box.name, act))
                     self._send(200, "application/json", json.dumps({"ok": True, "sent": cmd}))
+                elif p == "/api/cosmo/capture":
+                    gs.force_capture = bool(body.get("on")); gs.cosmo.tx_once_capture()
+                    self._send(200, "application/json", json.dumps({"ok": True, "on": gs.force_capture}))
                 elif p == "/api/clear":
                     with gs.lock: gs.tracks.clear()
                     self._send(200, "application/json", '{"ok":true}')
@@ -969,8 +994,18 @@ def main():
     ap.add_argument("--record", help="append raw serial bytes to this file"); ap.add_argument("--replay"); ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--web-port", type=int); ap.add_argument("--no-connect", action="store_true")
     ap.add_argument("--no-browser", action="store_true", help="do not open the UI in the default browser at start")
+    ap.add_argument("--cosmo-probe", action="store_true", help="find Cosmostreamer boxes, decode what they send, check web/upload/RTSP, then exit")
+    ap.add_argument("--probe-host", action="append", default=[], help="box address for --cosmo-probe (repeatable), e.g. 192.168.50.1")
+    ap.add_argument("--probe-seconds", type=int, default=20)
+    ap.add_argument("--cosmo-capture", action="store_true", help="record every Cosmostreamer datagram to logs/cosmo/ for this run")
     args = ap.parse_args()
     disable_quickedit()
+    if args.cosmo_probe:
+        stamp = dt.datetime.now().strftime("%Y_%m_%d_%H_%M_%S"); d = os.path.join(DATA_DIR, "logs", "cosmo")
+        rep = cosmo_mod.probe(args.probe_host, args.probe_seconds, capture=os.path.join(d, "%s_probe.jsonl" % stamp))
+        with open(os.path.join(d, "%s_probe_report.json" % stamp), "w") as f: json.dump(rep, f, indent=2)
+        print("report written to %s" % os.path.join(d, "%s_probe_report.json" % stamp))
+        return 0
     if args.list_ports:
         for p in list_ports(): print("%-30s vid=%s pid=%s  %s" % (p["device"], hex(p["vid"]) if p["vid"] else "-", hex(p["pid"]) if p["pid"] else "-", p["description"]))
         print("autodetect ->", find_port()); return 0
@@ -983,6 +1018,7 @@ def main():
     if args.web_port: cfg["web"]["port"] = args.web_port
     with open(args.config, "w") as f: json.dump(cfg, f, indent=2)
     gs = GroundStation(cfg, args.config)
+    gs.force_capture = args.cosmo_capture
     page = open(os.path.join(RES_DIR, "sitgs_ui.html"), "rb").read()
     port = int(cfg["web"]["port"])
     try: srv = ThreadingHTTPServer(("0.0.0.0", port), make_handler(gs, page))
