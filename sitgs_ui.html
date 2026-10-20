@@ -462,7 +462,7 @@ async function refreshDiag(){if(diagBusy)return;diagBusy=true;try{const d=await 
  const b=d.boxes.find(x=>x.key==sel.value)||d.boxes[0];
  $('draw').textContent=b?('last text packets:\n'+(b.raw_text.length?b.raw_text.map(t=>'  '+t).join('\n'):'  (none - normal with no drone connected)')+
    '\n\nall keys received ('+Object.keys(b.keys).length+'):\n'+Object.entries(b.keys).map(([k,v])=>`  ${k.padEnd(22)} ${v}${k in b.values_now?'':'   (cleared)'}`).join('\n')+
-   '\n\nbinary: '+JSON.stringify(b.binary)):'No box has answered yet. On the box Wi-Fi the box is 192.168.50.1 - add it under Cosmostreamer boxes > Manual hosts if it is not found.';
+   '\n\nbinary: '+JSON.stringify(b.binary)+(Object.keys(b.json||{}).length?'\n\nbox status messages:\n'+Object.entries(b.json).map(([k,v])=>`  ${k}: ${typeof v=='string'?v:JSON.stringify(v)}`).join('\n'):'')):'No box has answered yet. On the box Wi-Fi the box is 192.168.50.1 - add it under Cosmostreamer boxes > Manual hosts if it is not found.';
  const lines=[`packets ${d.packets} · errors ${d.errors} · dropped ${JSON.stringify(d.drops)}`,`discovery to: ${d.broadcasts.join(', ')}`];
  for(const x of d.boxes)lines.push(`${x.key}: `+Object.entries(x.counts).map(([k,v])=>k+' '+v).join(', '));
  if(d.unknown.length){lines.push('unrecognised packets (latest last):');for(const u of d.unknown.slice(-8))lines.push(`  ${u.peer} ${u.hex}`)}

@@ -9,6 +9,7 @@ logs/kml/
 logs/puck/
 logs/missions/
 logs/sitgs-events.log
+logs/cosmo/
 mediamtx.yml
 
 # build output

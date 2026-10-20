@@ -34,7 +34,8 @@ try:
     rep = cosmo.probe(["127.0.0.1:%d" % port], seconds=4, capture=cap, out=lines.append)
 finally:
     s1.kill()
-bx = [x for x in rep["boxes"] if x.get("answered")]
+# only the simulated box: a real box on the same network also answers the broadcast
+bx = [x for x in rep["boxes"] if x.get("answered") and x["host"] == "127.0.0.1" and x["port"] == port]
 check(len(bx) == 1 and bx[0]["name"] == "Probe1" and bx[0]["app_type"] == 22 and bx[0]["version"] == "0.24.11", "probe decodes the discovery answer")
 check("gps_lat" in bx[0]["keys"] and any(k.startswith("ttype 0, 56 bytes") for k in bx[0]["binary"]), "probe lists text keys and binary layout")
 check("rtsp" in bx[0] and "waypoints" in bx[0] and "http" in bx[0], "probe checks web UI, waypoint upload and RTSP")

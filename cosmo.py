@@ -86,6 +86,7 @@ class Box:
         self.raw_text = collections.deque(maxlen=20)
         self.counts = collections.Counter()   # packet type name -> count
         self.keys_seen = {}                    # every text key ever received -> last value (survives clears)
+        self.json = {}                         # JSON messages from the box: cmd -> param
         self.found_via = ""
         self.transport = "udp"
         self.takeoff_msl = None
@@ -127,7 +128,7 @@ class Box:
                 "ctrl_app_en": v.get("ctrl_app_en"), "camera_detected": v.get("camera_detected"),
                 "video_url": "rtsp://%s:554/video" % self.host}
     def diag(self):
-        return {"key": self.key, "counts": dict(self.counts), "raw_text": list(self.raw_text)[-5:],
+        return {"key": self.key, "counts": dict(self.counts), "raw_text": list(self.raw_text)[-5:], "json": dict(self.json),
                 "keys": dict(sorted(self.keys_seen.items())), "values_now": dict(sorted(self.values.items())),
                 "binary": dict(sorted(self.bin.items()))}
 
@@ -296,6 +297,10 @@ class CosmoClient:
                 txt = p[1:].decode("ascii", "replace"); b.raw_text.append(txt)
                 self.parse_text(b, txt); b.last_telemetry = now
                 self.after_text(b, now)
+            elif ptype == 0x7b:   # '{': JSON status from the box, e.g. {"cmd":"ifaces","param":"int <ip> <ssid> ..."}
+                try:
+                    j = json.loads(p.decode("utf-8", "replace")); b.json[str(j.get("cmd", "?"))] = j.get("param", j)
+                except ValueError: self.unknown.append((now, key, p[:64].hex()))
             elif ptype not in (P_CLIENT_ALIVE, P_CLIENT_GONE):
                 self.unknown.append((now, key, p[:64].hex()))
 
@@ -445,6 +450,10 @@ def probe(hosts=(), seconds=20, capture=None, http=True, out=print):
                 if eq and k.strip(): b["keys"][k.strip()] = v.strip()
         elif p[0] == P_BIN_TELEM:
             b["binary"]["ttype %s, %d bytes" % (p[1] if len(p) > 1 else "?", len(p))] += 1
+        elif p[0] == 0x7b:
+            try: j = json.loads(p.decode("utf-8", "replace")); b.setdefault("json", {})[str(j.get("cmd", "?"))] = j.get("param", j)
+            except ValueError:
+                if len(b["unknown"]) < 5: b["unknown"].append(p[:64].hex())
         elif p[0] not in (P_SERVER_STATUS,) and len(b["unknown"]) < 5:
             b["unknown"].append(p[:64].hex())
     if cap: cap.close()
@@ -461,6 +470,7 @@ def probe(hosts=(), seconds=20, capture=None, http=True, out=print):
             out("  text keys (%d), last values:" % len(b["keys"]))
             for k in sorted(b["keys"]): out("    %-22s %s" % (k, b["keys"][k]))
         else: out("  no text telemetry (normal without a drone connected)")
+        for cmd, param in b.get("json", {}).items(): out("  JSON %-10s %s" % (cmd, param))
         for h in b["unknown"]: out("  unrecognised payload: %s" % h)
         if http and b["answered"]:
             st, body = _http("http://%s/" % b["host"])
